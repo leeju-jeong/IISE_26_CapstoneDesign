@@ -101,8 +101,9 @@ def train(cfg: dict, data_root: str):
 
     print(f"[DONE] Best loss: {best_loss:.4f} → saved to {ckpt_dir}")
 
-    # ── Compute μ, σ from normal training features for Mahalanobis ──
+    # ── Compute μ, σ using BEST checkpoint (not last epoch) ──
     print("[INFO] Computing Mahalanobis statistics from training data...")
+    backbone.load_state_dict(torch.load(ckpt_dir / "backbone.pth", map_location=device))
     backbone.eval()
     all_features = []
     with torch.no_grad():

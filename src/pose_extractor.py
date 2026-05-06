@@ -40,6 +40,7 @@ def extract_skeleton(video_path: str, cfg: dict) -> np.ndarray | None:
     )
 
     frames = []
+    valid_frame_indices = []
     frame_idx = 0
 
     while True:
@@ -75,6 +76,7 @@ def extract_skeleton(video_path: str, cfg: dict) -> np.ndarray | None:
             joint_vectors.append(vec)
 
         frames.append(np.stack(joint_vectors))  # (J, 7)
+        valid_frame_indices.append(frame_idx)
         frame_idx += 1
 
     cap.release()
@@ -82,11 +84,11 @@ def extract_skeleton(video_path: str, cfg: dict) -> np.ndarray | None:
 
     if len(frames) == 0:
         print(f"[WARN] No valid frames extracted from {video_path}")
-        return None
+        return None, None
 
     skeleton = np.stack(frames)  # (T, J, 7)
     skeleton = _normalize(skeleton)
-    return skeleton
+    return skeleton, np.array(valid_frame_indices, dtype=np.int32)
 
 
 def _normalize(skeleton: np.ndarray) -> np.ndarray:
@@ -110,12 +112,16 @@ def process_session(video_path: str, output_dir: str, cfg: dict) -> None:
         return
 
     print(f"[INFO] Processing: {video_path.name}")
-    skeleton = extract_skeleton(str(video_path), cfg)
+    skeleton, frame_indices = extract_skeleton(str(video_path), cfg)
     if skeleton is None:
         return
 
     with open(out_path, "wb") as f:
-        pickle.dump({"skeleton": skeleton, "source": str(video_path)}, f)
+        pickle.dump({
+            "skeleton": skeleton,
+            "frame_indices": frame_indices,  # 원본 비디오 프레임 인덱스
+            "source": str(video_path),
+        }, f)
 
     print(f"[DONE] Saved {skeleton.shape} → {out_path}")
 

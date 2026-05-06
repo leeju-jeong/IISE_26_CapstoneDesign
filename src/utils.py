@@ -35,16 +35,22 @@ def mahalanobis_diag(x: np.ndarray, mu: np.ndarray, std: np.ndarray) -> np.ndarr
 # ──────────────────────────────────────────────
 
 def compute_normality_score(mahal_dist: np.ndarray, prompt_sim: np.ndarray,
-                             gamma: float = 1.0) -> np.ndarray:
+                             gamma: float = 1.0,
+                             feature_dim: int = 256) -> np.ndarray:
     """
     mahal_dist  : (N,) Mahalanobis distances (larger = more OoD)
     prompt_sim  : (N,) cosine similarities with normal text ∈ [-1, 1]
     gamma       : decay rate for OoD component
+    feature_dim : backbone output dim (스케일링에 사용)
 
     Returns: (N,) Study Normality Score ∈ [0, 1]
+
+    Note: 256차원 diagonal Mahalanobis의 기대값 ≈ sqrt(256) = 16.
+          gamma를 1/sqrt(feature_dim)으로 스케일링해 exp() underflow를 방지.
     """
+    scaled_gamma = gamma / np.sqrt(feature_dim)
     # OoD component: normal clip → small distance → score ≈ 1
-    ood_score = np.exp(-gamma * mahal_dist)
+    ood_score = np.exp(-scaled_gamma * mahal_dist)
 
     # Prompt component: normal clip → high cosine sim → score ≈ 1
     prompt_score = (prompt_sim + 1.0) / 2.0  # [-1,1] → [0,1]

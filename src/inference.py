@@ -94,8 +94,11 @@ def run_inference(video_path: str, cfg: dict, ckpt_dir: str) -> np.ndarray:
 
             mahal = mahalanobis_diag(x_np, mu, std)
             prompt_sim = (z_np @ text_avg.T).squeeze()
-            score = compute_normality_score(mahal, np.array([prompt_sim]),
-                                            cfg["inference"]["mahal_gamma"])
+            score = compute_normality_score(
+                mahal, np.array([prompt_sim]),
+                cfg["inference"]["mahal_gamma"],
+                cfg["model"]["feature_dim"],
+            )
             scores_raw.append(float(score[0]))
 
     scores_raw = np.array(scores_raw)

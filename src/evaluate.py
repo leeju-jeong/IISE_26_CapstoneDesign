@@ -78,7 +78,9 @@ def evaluate(cfg: dict, data_root: str, ckpt_dir: str):
             mahal = mahalanobis_diag(x_np, mu, std)          # (B,)
             prompt_sim = (z_np @ t_np.T).squeeze(-1)          # (B,)
             scores = compute_normality_score(
-                mahal, prompt_sim, cfg["inference"]["mahal_gamma"]
+                mahal, prompt_sim,
+                cfg["inference"]["mahal_gamma"],
+                cfg["model"]["feature_dim"],
             )
             all_scores.extend(scores.tolist())
             all_labels.extend(binary_labels.tolist())
