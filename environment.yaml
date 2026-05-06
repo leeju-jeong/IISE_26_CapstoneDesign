@@ -1,0 +1,18 @@
+name: study
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+    - torch==2.5.1+cu121 --index-url https://download.pytorch.org/whl/cu121
+    - torchvision==0.20.1+cu121 --index-url https://download.pytorch.org/whl/cu121
+    - mediapipe==0.10.35
+    - opencv-python==4.13.0.33
+    - open_clip_torch
+    - numpy
+    - scikit-learn
+    - matplotlib
+    - pandas
+    - tqdm
+    - pyyaml

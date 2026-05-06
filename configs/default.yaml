@@ -1,0 +1,39 @@
+data:
+  fps: 30
+  frame_step: 3           # sample every Nth frame → 100 frames per 10s clip
+  window_sec: 10
+  stride_sec: 5
+  # MediaPipe Pose landmark indices for upper body (11 joints)
+  # nose(0), left_eye(2), right_eye(5), left_ear(7), right_ear(8),
+  # left_shoulder(11), right_shoulder(12), left_elbow(13), right_elbow(14),
+  # left_wrist(15), right_wrist(16)
+  joints: [0, 2, 5, 7, 8, 11, 12, 13, 14, 15, 16]
+  joint_dim: 7            # [x, y, time, confidence, joint_idx, centroid_x, centroid_y]
+  min_confidence: 0.5     # drop frames where mean joint confidence < this
+
+model:
+  feature_dim: 256        # backbone output dimension
+  clip_dim: 512           # CLIP text embedding dimension
+  clip_model: "ViT-B-32"
+  clip_pretrained: "openai"
+  adapter_hidden: 256
+  freeze_backbone: true   # false = fine-tune last residual block
+
+training:
+  device: "cuda"
+  batch_size: 32
+  lr: 1e-4
+  weight_decay: 1e-5
+  epochs: 50
+  temperature: 0.07
+  checkpoint_dir: "checkpoints"
+  normal_prompts:
+    - "A student is sitting upright and focusing on studying."
+    - "A learner is looking at the screen or desk material with sustained attention."
+    - "A student is engaged in a normal self-study session."
+    - "A person is reading or writing at a desk in a focused manner."
+
+inference:
+  mahal_gamma: 1.0        # OoD normality = exp(-gamma * mahal_dist)
+  smooth_window_sec: 10
+  smooth_stride_sec: 5

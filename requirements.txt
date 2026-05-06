@@ -1,0 +1,15 @@
+# PyTorch (CUDA 12.1) — GPU 없으면 아래 주석 참고
+# CPU only: pip install torch torchvision
+torch==2.5.1+cu121
+torchvision==0.20.1+cu121
+
+# Core
+mediapipe==0.10.35
+opencv-python==4.13.0.33
+open_clip_torch
+numpy
+scikit-learn
+matplotlib
+pandas
+tqdm
+pyyaml
