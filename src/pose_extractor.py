@@ -1,5 +1,5 @@
 """
-Video → skeleton pkl
+Video → skeleton pkl  (MediaPipe Tasks API, mediapipe >= 0.10.x)
 Input : mp4 파일 경로
 Output: (T, J, 7) numpy array, 0~1 정규화
         7D = [x, y, time_norm, confidence, joint_idx_norm, centroid_x, centroid_y]
@@ -13,14 +13,20 @@ import mediapipe as mp
 import numpy as np
 import yaml
 
+PoseLandmarker = mp.tasks.vision.PoseLandmarker
+PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
+RunningMode = mp.tasks.vision.RunningMode
 
-UPPER_BODY_INDICES = [0, 2, 5, 7, 8, 11, 12, 13, 14, 15, 16]  # 11 joints
+DEFAULT_MODEL = str(Path(__file__).parent.parent / "models" / "pose_landmarker.task")
 
 
-def extract_skeleton(video_path: str, cfg: dict) -> np.ndarray | None:
+def extract_skeleton(video_path: str, cfg: dict,
+                     model_path: str = DEFAULT_MODEL) -> tuple:
     """
-    Returns (T, J, 7) array where T = valid frames, J = 11 joints.
-    Returns None if video cannot be opened.
+    Returns (skeleton, frame_indices) where
+      skeleton      : (T, J, 7) float32, 0~1 정규화
+      frame_indices : (T,) int32, 원본 비디오 프레임 번호
+    Returns (None, None) on failure.
     """
     joints = cfg["data"]["joints"]
     min_conf = cfg["data"].get("min_confidence", 0.5)
@@ -28,73 +34,78 @@ def extract_skeleton(video_path: str, cfg: dict) -> np.ndarray | None:
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print(f"[ERROR] Cannot open: {video_path}")
-        return None
+        return None, None
 
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    pose = mp.solutions.pose.Pose(
-        static_image_mode=False,
-        model_complexity=1,
-        smooth_landmarks=True,
-        min_detection_confidence=0.5,
+
+    options = PoseLandmarkerOptions(
+        base_options=mp.tasks.BaseOptions(model_asset_path=model_path),
+        running_mode=RunningMode.VIDEO,
+        num_poses=1,
+        min_pose_detection_confidence=0.5,
+        min_pose_presence_confidence=0.5,
         min_tracking_confidence=0.5,
     )
 
     frames = []
     valid_frame_indices = []
-    frame_idx = 0
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    with PoseLandmarker.create_from_options(options) as landmarker:
+        frame_idx = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        result = pose.process(rgb)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            timestamp_ms = int(frame_idx / fps * 1000)
 
-        if result.pose_landmarks is None:
+            result = landmarker.detect_for_video(mp_image, timestamp_ms)
+
+            if not result.pose_landmarks:
+                frame_idx += 1
+                continue
+
+            lms = result.pose_landmarks[0]  # 첫 번째 사람
+            coords = np.array([[lms[j].x, lms[j].y, lms[j].visibility]
+                                for j in joints])  # (J, 3)
+
+            mean_conf = coords[:, 2].mean()
+            if mean_conf < min_conf:
+                frame_idx += 1
+                continue
+
+            centroid = coords[:, :2].mean(axis=0)
+            time_norm = frame_idx / max(total_frames - 1, 1)
+
+            joint_vectors = []
+            for j_local in range(len(joints)):
+                x, y, conf = coords[j_local]
+                joint_idx_norm = j_local / (len(joints) - 1)
+                vec = np.array([x, y, time_norm, conf, joint_idx_norm,
+                                centroid[0], centroid[1]])
+                joint_vectors.append(vec)
+
+            frames.append(np.stack(joint_vectors))  # (J, 7)
+            valid_frame_indices.append(frame_idx)
             frame_idx += 1
-            continue
-
-        lms = result.pose_landmarks.landmark
-        coords = np.array([[lms[j].x, lms[j].y, lms[j].visibility] for j in joints])  # (J, 3)
-
-        mean_conf = coords[:, 2].mean()
-        if mean_conf < min_conf:
-            frame_idx += 1
-            continue
-
-        # centroid of the joint set (x, y)
-        centroid = coords[:, :2].mean(axis=0)  # (2,)
-
-        time_norm = frame_idx / max(total_frames - 1, 1)
-
-        joint_vectors = []
-        for j_local, j_global in enumerate(joints):
-            x, y, conf = coords[j_local]
-            joint_idx_norm = j_local / (len(joints) - 1)
-            vec = np.array([x, y, time_norm, conf, joint_idx_norm, centroid[0], centroid[1]])
-            joint_vectors.append(vec)
-
-        frames.append(np.stack(joint_vectors))  # (J, 7)
-        valid_frame_indices.append(frame_idx)
-        frame_idx += 1
 
     cap.release()
-    pose.close()
 
     if len(frames) == 0:
-        print(f"[WARN] No valid frames extracted from {video_path}")
+        print(f"[WARN] No valid frames: {video_path}")
         return None, None
 
-    skeleton = np.stack(frames)  # (T, J, 7)
+    skeleton = np.stack(frames).astype(np.float32)   # (T, J, 7)
     skeleton = _normalize(skeleton)
     return skeleton, np.array(valid_frame_indices, dtype=np.int32)
 
 
 def _normalize(skeleton: np.ndarray) -> np.ndarray:
-    """Per-channel min-max normalization to [0, 1] across all frames."""
-    T, J, D = skeleton.shape
-    flat = skeleton.reshape(-1, D)
+    """Per-channel min-max normalization to [0, 1]."""
+    flat = skeleton.reshape(-1, skeleton.shape[-1])
     mn = flat.min(axis=0)
     mx = flat.max(axis=0)
     rng = np.where(mx - mn > 1e-8, mx - mn, 1.0)
@@ -119,18 +130,22 @@ def process_session(video_path: str, output_dir: str, cfg: dict) -> None:
     with open(out_path, "wb") as f:
         pickle.dump({
             "skeleton": skeleton,
-            "frame_indices": frame_indices,  # 원본 비디오 프레임 인덱스
+            "frame_indices": frame_indices,
             "source": str(video_path),
         }, f)
 
-    print(f"[DONE] Saved {skeleton.shape} → {out_path}")
+    valid_rate = len(frame_indices) / max(
+        int(cv2.VideoCapture(str(video_path)).get(cv2.CAP_PROP_FRAME_COUNT)), 1
+    ) * 100
+    print(f"[DONE] {skeleton.shape}  유효 프레임: {valid_rate:.1f}%  → {out_path}")
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("video_path", type=str, help="mp4 파일 경로 (or directory)")
+    parser.add_argument("video_path", type=str, help="mp4 경로 또는 디렉토리")
     parser.add_argument("output_dir", type=str, help="skeleton pkl 저장 경로")
     parser.add_argument("--config", type=str, default="configs/default.yaml")
+    parser.add_argument("--model", type=str, default=DEFAULT_MODEL)
     args = parser.parse_args()
 
     with open(args.config) as f:
