@@ -60,7 +60,7 @@ def run_inference(video_path: str, cfg: dict, ckpt_dir: str) -> np.ndarray:
 
     # ── Extract skeleton ──
     print(f"[INFO] Extracting skeleton from {video_path}...")
-    skeleton = extract_skeleton(video_path, cfg)
+    skeleton, _, _ = extract_skeleton(video_path, cfg)
     if skeleton is None:
         print("[ERROR] Skeleton extraction failed.")
         return np.array([])
