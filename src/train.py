@@ -23,7 +23,7 @@ from tqdm import tqdm
 
 from dataset import StudyDataset
 from losses import contrastive_loss
-from models import MLPAdapter, PointNetExtractor
+from models import MLPAdapter, MotionBERTExtractor
 from utils import compute_stats, encode_text_prompts
 
 
@@ -44,10 +44,12 @@ def train(cfg: dict, data_root: str):
     print(f"[CLIP] text embeddings: {text_embeds.shape}")
 
     # ── Models ──
-    backbone = PointNetExtractor(
-        in_dim=cfg["data"]["joint_dim"],
+    backbone = MotionBERTExtractor(
         feature_dim=cfg["model"]["feature_dim"],
-        freeze_backbone=cfg["model"]["freeze_backbone"],
+        n_frames=cfg["model"]["n_frames"],
+        n_joints=cfg["model"]["n_joints"],
+        ckpt_path=cfg["model"]["motionbert_ckpt"],
+        freeze=cfg["model"]["freeze_backbone"],
     ).to(device)
 
     adapter = MLPAdapter(

@@ -1,2 +1,2 @@
-from .feature_extractor import PointNetExtractor
+from .feature_extractor import MotionBERTExtractor
 from .adapter import MLPAdapter

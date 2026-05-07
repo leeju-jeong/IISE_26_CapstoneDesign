@@ -17,7 +17,7 @@ import open_clip
 import torch
 import yaml
 
-from models import MLPAdapter, PointNetExtractor
+from models import MLPAdapter, MotionBERTExtractor
 from pose_extractor import extract_skeleton
 from dataset import build_clips
 from utils import (compute_normality_score, encode_text_prompts,
@@ -29,10 +29,12 @@ def run_inference(video_path: str, cfg: dict, ckpt_dir: str) -> np.ndarray:
     ckpt_dir = Path(ckpt_dir)
 
     # ── Load models ──
-    backbone = PointNetExtractor(
-        in_dim=cfg["data"]["joint_dim"],
+    backbone = MotionBERTExtractor(
         feature_dim=cfg["model"]["feature_dim"],
-        freeze_backbone=False,
+        n_frames=cfg["model"]["n_frames"],
+        n_joints=cfg["model"]["n_joints"],
+        ckpt_path=cfg["model"]["motionbert_ckpt"],
+        freeze=False,
     ).to(device)
     backbone.load_state_dict(torch.load(ckpt_dir / "backbone.pth", map_location=device))
     backbone.eval()

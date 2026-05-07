@@ -12,12 +12,15 @@ data:
   min_confidence: 0.5     # drop frames where mean joint confidence < this
 
 model:
-  feature_dim: 256        # backbone output dimension
+  feature_dim: 512        # MotionBERT 출력 차원 (512 고정)
   clip_dim: 512           # CLIP text embedding dimension
   clip_model: "ViT-B-32"
   clip_pretrained: "openai"
-  adapter_hidden: 256
-  freeze_backbone: true   # false = fine-tune last residual block
+  adapter_hidden: 512
+  freeze_backbone: true   # false = MotionBERT 전체 fine-tune
+  n_frames: 100           # window_sec * fps / frame_step = 10*30/3
+  n_joints: 11            # MediaPipe 상체 관절 수
+  motionbert_ckpt: "models/motionbert/MB_release.bin"
 
 training:
   device: "cuda"
