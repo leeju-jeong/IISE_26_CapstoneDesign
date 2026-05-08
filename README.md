@@ -3,55 +3,39 @@
 ## 파이프라인
 
 ```
-영상 (MP4)
-    │
-    ▼
-[pose_extractor.py]
-MediaPipe PoseLandmarker (VIDEO 모드)
-  - 상체 11개 관절 추출: nose, eyes, ears, shoulders, elbows, wrists
-  - confidence < 0.5 프레임 제거
-  - 관절별 7차원 벡터: [x, y, time_norm, confidence, joint_idx, centroid_x, centroid_y]
-  - 저장: skeleton.pkl  →  shape: (T, 11, 7)
-    │
-    ▼
-[dataset.py]
-슬라이딩 윈도우 클립 분할
-  - window = 10초, stride = 5초, 매 3프레임 샘플링
-  - 클립 shape: (100 frames, 11 joints, 7 dims)
-  - labels.csv 와 원본 frame_indices 기준으로 normal / OOD 라벨 매칭
-    │
-    ▼
-[models/feature_extractor.py]  MotionBERTExtractor
-  ① MediaPipe 11관절 → H36M 17관절 변환 (하체 관절은 confidence=0으로 채움)
-  ② Bounding-box 정규화 → 좌표 범위 [-1, 1]
-  ③ DSTformer (MotionBERT, ICCV 2023, pretrained on Human3.6M + NTU60)
-  ④ 프레임 × 관절 차원 mean pooling
-  출력: (B, 512)
-    │
-    ▼
-[models/adapter.py]  MLPAdapter
-  Linear(512 → 512) → ReLU → Linear(512 → 512) → L2 Normalize
-  출력: (B, 512)  ← CLIP 공간에 정렬된 벡터
-    │
-    ▼
-[train.py]  학습 (정상 데이터만 사용)
-  - OpenCLIP ViT-B-32로 정상 공부 프롬프트 4개를 텍스트 임베딩
-  - InfoNCE Loss: skeleton 벡터 ↔ 텍스트 임베딩 간 contrastive 학습
-  - 학습 완료 후 훈련 특징 전체로 μ, σ 계산 (Mahalanobis용)
-  - 저장: backbone.pth, adapter.pth, stats.npz
-    │
-    ▼
-[inference.py / evaluate.py]  추론 및 평가
-  Mahalanobis Distance:
-    mahal = ‖(x − μ) / σ‖₂
-  CLIP Cosine Similarity:
-    cos_sim = z · text_avg
-  Normality Score:
-    score = exp(−γ/√512 × mahal) × (cos_sim + 1) / 2   ∈ [0, 1]
-  Temporal Smoothing → 이동 평균
-
-  출력: outputs/scores.csv, outputs/score_plot.png
-  평가: AUROC (normal vs OOD), t-SNE 시각화
+[Video Input]
+    ↓ 720p 이상, 30fps, 카메라 정면 / 가로(landscape) 고정
+[MediaPipe PoseLandmarker]
+    ↓ 상체 11개 관절 추출
+    머리 5개: 코, 눈(좌우), 귀(좌우)
+    팔  6개: 어깨(좌우), 팔꿈치(좌우), 손목(좌우)
+    confidence < 0.5 프레임 자동 제거
+[7D 벡터 변환]
+    ↓ v = [x, y, time_norm, confidence, joint_index, centroid_x, centroid_y]
+    클립 단위 분할: window=10s, stride=5s, 3프레임마다 1샘플
+    → 클립 shape: (100 frames, 11 joints, 7 dims)
+[MotionBERT — DSTformer]  ← pretrained on Human3.6M + NTU60 (ICCV 2023)
+    ↓ MediaPipe 11관절 → H36M 17관절 변환 후 입력
+    ↓ Bounding-box 정규화 [-1, 1]
+    ↓ 마지막 proj layer만 학습, backbone frozen
+    x ∈ R^512
+[MLP Adapter]  ← 학습 대상
+    ↓ Contrastive loss로 학습 (정상 클립 + 텍스트 프롬프트 쌍)
+    ↓ InfoNCE: clip-to-text + clip-to-clip
+    f(x) ∈ R^512  (L2 normalized, CLIP 텍스트 임베딩 공간)
+        ↙                              ↘
+[OoD Score]                      [Prompt Score]
+Mahalanobis(x, μ, σ)             cosine_sim(f(x), text_avg)
+  = √Σ((x−μ)²/σ²)               text_avg: 정상 프롬프트 4개 평균
+μ, σ: 정상 데이터 전체로 계산     ∈ [-1, 1] → [0, 1] 선형 변환
+        ↘                              ↙
+              [Score Fusion]
+    score = exp(−γ/√512 × mahal) × (cos_sim + 1) / 2
+    + Temporal Smoothing (이동 평균)
+        ↓
+[Study Normality Score] ∈ [0, 1]
+    0: 이상 행동 (졸음, 스마트폰, 이석 등)
+    1: 정상 학습 (집중, 필기, 화면 응시)
 ```
 
 ## 실행

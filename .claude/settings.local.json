@@ -28,10 +28,20 @@
       "Bash(python3 /tmp/test_config_types.py)",
       "Bash(python3)",
       "Bash(python3 src/train.py --help)",
-      "Bash(python3 -c \"import src.train\")"
+      "Bash(python3 -c \"import src.train\")",
+      "Bash(mkdir -p /home/leeju2/Segformer/data/test_subject)",
+      "Bash(wget -q -O /home/leeju2/Segformer/models/pose_landmarker.task https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(mkdir -p /home/leeju2/Segformer/models/motionbert)",
+      "Bash(wget -q --show-progress \"https://huggingface.co/walterzhu/MotionBERT/resolve/main/checkpoint/pretrain/MB_release/latest_epoch.bin\" -O /home/leeju2/Segformer/models/motionbert/MB_release.bin)",
+      "Bash(python -c ' *)",
+      "Bash(conda env *)"
     ],
     "additionalDirectories": [
-      "/home/leeju2/.ssh"
+      "/home/leeju2/.ssh",
+      "/home/leeju2/Segformer/data"
     ]
   }
 }
