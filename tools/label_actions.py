@@ -215,7 +215,7 @@ def save_csv(segments: list, path: str):
 
     for a in sorted(dur_by_action):
         dur = dur_by_action[a]
-        est_clips = max(0, int((dur * 30 - 64) / 32) + 1)  # clip_frames=64, stride=32 @ 30fps
+        est_clips = int(dur * 30 / 64)  # clip_frames=64, no overlap @ 30fps
         tag = " ← anomaly (inference only)" if a == 6 else ""
         print(f"  [{a}] {ACTION_NAMES[a]:15s}  {dur:5.1f}s  → 약 {est_clips}개 클립{tag}")
 

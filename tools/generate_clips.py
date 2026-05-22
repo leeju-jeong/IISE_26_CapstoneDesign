@@ -42,7 +42,7 @@ from pathlib import Path
 import numpy as np
 
 CLIP_FRAMES  = 64
-STRIDE       = 32
+STRIDE       = CLIP_FRAMES            # 겹침 없음 — 각 구간 내에서 독립 클립만 생성
 TRAIN_ACTIONS = {1, 2, 3, 4, 5, 7}   # 6번(딴짓)은 훈련 제외
 
 
