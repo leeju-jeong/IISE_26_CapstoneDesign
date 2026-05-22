@@ -1,0 +1,26 @@
+data:
+  fps: 30
+  clip_frames: 64          # ~2.1s at 30fps
+  stride_frames: 32        # 50% overlap
+  joints: [0, 2, 5, 7, 8, 11, 12, 13, 14, 15, 16]  # 11 upper-body joints
+  joint_dim: 3             # (x, y, conf) — MotionBERT input
+  min_confidence: 0.5
+
+  # Label mapping: 1~5,7 → normal(0), 6 → anomaly(1)
+  normal_action_ids: [1, 2, 3, 4, 5, 7]
+  anomaly_action_ids: [6]
+
+model:
+  type: "motionbert"
+  feature_dim: 512         # DSTformer hidden dim
+  num_joints_coco: 17      # MotionBERT pretrained on COCO-17; we pad our 11 → 17
+  motionbert_checkpoint: "checkpoints/MB_pretrain.bin"
+  freeze_backbone: true
+
+training:
+  device: "cuda"
+  checkpoint_dir: "checkpoints/baseline"
+
+inference:
+  mahal_gamma: 1.0
+  smooth_window_clips: 3   # temporal smoothing (clips 단위)
