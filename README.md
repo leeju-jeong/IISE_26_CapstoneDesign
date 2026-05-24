@@ -1,62 +1,59 @@
-# IISE_26_CapstoneDesign — Study Normality Score
+# Study Normality Score
 
-## 파이프라인
+## 파이프라인 요약
 
-```
-[Video Input]
-    ↓ 720p 이상, 30fps, 카메라 정면 / 가로(landscape) 고정
-[MediaPipe PoseLandmarker]
-    ↓ 상체 11개 관절 추출
-    머리 5개: 코, 눈(좌우), 귀(좌우)
-    팔  6개: 어깨(좌우), 팔꿈치(좌우), 손목(좌우)
-    confidence < 0.5 프레임 자동 제거
-[7D 벡터 변환]
-    ↓ v = [x, y, time_norm, confidence, joint_index, centroid_x, centroid_y]
-    클립 단위 분할: window=10s, stride=5s, 3프레임마다 1샘플
-    → 클립 shape: (100 frames, 11 joints, 7 dims)
-[MotionBERT — DSTformer]  ← pretrained on Human3.6M + NTU60 (ICCV 2023)
-    ↓ MediaPipe 11관절 → H36M 17관절 변환 후 입력
-    ↓ Bounding-box 정규화 [-1, 1]
-    ↓ 마지막 proj layer만 학습, backbone frozen
-    x ∈ R^512
-[MLP Adapter]  ← 학습 대상
-    ↓ Contrastive loss로 학습 (정상 클립 + 텍스트 프롬프트 쌍)
-    ↓ InfoNCE: clip-to-text + clip-to-clip
-    f(x) ∈ R^512  (L2 normalized, CLIP 텍스트 임베딩 공간)
-        ↙                              ↘
-[OoD Score]                      [Prompt Score]
-Mahalanobis(x, μ, σ)             cosine_sim(f(x), text_avg)
-  = √Σ((x−μ)²/σ²)               text_avg: 정상 프롬프트 4개 평균
-μ, σ: 정상 데이터 전체로 계산     ∈ [-1, 1] → [0, 1] 선형 변환
-        ↘                              ↙
-              [Score Fusion]
-    score = exp(−γ/√512 × mahal) × (cos_sim + 1) / 2
-    + Temporal Smoothing (이동 평균)
-        ↓
-[Study Normality Score] ∈ [0, 1]
-    0: 이상 행동 (졸음, 스마트폰, 이석 등)
-    1: 정상 학습 (집중, 필기, 화면 응시)
-```
+| 단계 | 내용 |
+|------|------|
+| [1] Pose | MP4 → MediaPipe → `skeleton.pkl (T,11,7)` |
+| [2] Clip | window 5s / stride 3s / 10fps → `(50,11,7)` |
+| [3] MB 입력 | MP11→H36M17, bbox norm → `(B,T,17,2)` |
+| [4] Feature | MotionBERT frozen → `x ∈ R^512` |
+| [5] Stats x | 정상 train → `μ_x, σ_x` |
+| [6] Adapter | `loss = align + 0.1×preserve` |
+| [7] Stats z | 정상 train → `μ_z, σ_z` |
+| [8–9] Score | `score_x`, `score_z`, `score_text` → fusion |
+| [10] Eval | AUROC, AUPRC, timeline, t-SNE |
+
+### Score fusion (`inference.fusion`)
+
+- `linear_50_50`: `0.5·score_x + 0.5·score_z`
+- `linear_40_40_20`: `0.4·score_x + 0.4·score_z + 0.2·score_text` (기본)
+- `product`: `score_x × score_z × score_text`
+
+`anomaly_score = 1 - normality_score`
 
 ## 실행
 
 ```bash
-# 1. 포즈 추출
-python src/pose_extractor.py <video.mp4> <output_dir/>
+conda activate /home/storage/leeju2/envs/study
 
-# 2. 학습
+python src/pose_extractor.py video.mp4 data/subject_01/ --config configs/default.yaml
 python src/train.py --data_root data/ --config configs/default.yaml
-
-# 3. 평가
-python src/evaluate.py --data_root data/ --config configs/default.yaml
-
-# 4. 추론
-python src/inference.py --video <video.mp4> --config configs/default.yaml
+python src/evaluate.py --data_root data/ --ckpt_dir checkpoints
+python src/inference.py --video video.mp4 --ckpt_dir checkpoints
 ```
 
-## 환경 설정
+### 10s 비교 실험
 
 ```bash
-bash setup.sh
-conda activate study
+python src/train.py --data_root data/ --config configs/default_10s.yaml
 ```
+
+## MotionBERT 가중치 (MB_lite)
+
+**저장 위치:** `models/motionbert/lite_bert.bin`
+
+```bash
+# Hugging Face에서 받을 경우 (파일명은 자유)
+wget "https://huggingface.co/walterzhu/MotionBERT/resolve/main/checkpoint/pretrain/MB_lite/latest_epoch.bin" \
+  -O models/motionbert/lite_bert.bin
+```
+
+- `.gitignore`에 `models/motionbert/` 포함 → Git에는 올리지 않음
+- 아키텍처: `MotionBERT/configs/pretrain/MB_lite.yaml` (`dim_feat=256`, `mlp_ratio=4`)
+- Lite로 바꾼 뒤에는 `adapter.pth`, `stats.npz` **재학습** 필요
+
+## 저장 파일
+
+- `checkpoints/adapter.pth`
+- `checkpoints/stats.npz` — `mu_x, std_x, mu_z, std_z`

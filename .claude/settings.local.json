@@ -37,7 +37,8 @@
       "Bash(mkdir -p /home/leeju2/Segformer/models/motionbert)",
       "Bash(wget -q --show-progress \"https://huggingface.co/walterzhu/MotionBERT/resolve/main/checkpoint/pretrain/MB_release/latest_epoch.bin\" -O /home/leeju2/Segformer/models/motionbert/MB_release.bin)",
       "Bash(python -c ' *)",
-      "Bash(conda env *)"
+      "Bash(conda env *)",
+      "Bash(git -C /home/leeju2/Segformer log --oneline -5)"
     ],
     "additionalDirectories": [
       "/home/leeju2/.ssh",

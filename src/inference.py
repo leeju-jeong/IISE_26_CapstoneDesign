@@ -1,137 +1,130 @@
 """
-End-to-end inference: video → Study Normality Score (per clip)
+Inference: video → normality / anomaly scores
 
-실행:
-  python src/inference.py --video path/to/video.mp4 --config configs/default.yaml
-
-출력:
-  - 콘솔: clip별 normality score
-  - outputs/scores.csv
-  - outputs/score_plot.png
+출력: outputs/scores.csv, outputs/score_timeline.png
 """
 import argparse
+import csv
 from pathlib import Path
 
 import numpy as np
 import open_clip
 import torch
+import torch.nn.functional as F
 import yaml
 
-from models import MLPAdapter, MotionBERTExtractor
-from pose_extractor import extract_skeleton
 from dataset import build_clips
-from utils import (compute_normality_score, encode_text_prompts,
-                   mahalanobis_diag, temporal_smooth)
+from models import MLPAdapter, build_motionbert_from_cfg
+from pose_extractor import extract_skeleton
+from utils import (
+    compute_clip_scores,
+    encode_text_prompts,
+    load_stats,
+    temporal_smooth,
+)
 
 
 def run_inference(video_path: str, cfg: dict, ckpt_dir: str) -> np.ndarray:
     device = cfg["training"]["device"]
     ckpt_dir = Path(ckpt_dir)
+    inf = cfg["inference"]
+    feat_dim = cfg["model"]["feature_dim"]
 
-    # ── Load models ──
-    backbone = MotionBERTExtractor(
-        feature_dim=cfg["model"]["feature_dim"],
-        n_frames=cfg["model"]["n_frames"],
-        n_joints=cfg["model"]["n_joints"],
-        ckpt_path=cfg["model"]["motionbert_ckpt"],
-        freeze=False,
-    ).to(device)
-    backbone.load_state_dict(torch.load(ckpt_dir / "backbone.pth", map_location=device))
+    backbone = build_motionbert_from_cfg(cfg).to(device)
     backbone.eval()
 
     adapter = MLPAdapter(
         feature_dim=cfg["model"]["feature_dim"],
         hidden_dim=cfg["model"]["adapter_hidden"],
         clip_dim=cfg["model"]["clip_dim"],
+        dropout=cfg["model"].get("adapter_dropout", 0.1),
     ).to(device)
-    adapter.load_state_dict(torch.load(ckpt_dir / "adapter.pth", map_location=device))
+    adapter.load_state_dict(
+        torch.load(ckpt_dir / "adapter.pth", map_location=device, weights_only=True),
+    )
     adapter.eval()
 
-    stats = np.load(ckpt_dir / "stats.npz")
-    mu, std = stats["mu"], stats["std"]
+    stats = load_stats(ckpt_dir / "stats.npz")
 
-    # ── CLIP text embeddings ──
     clip_model, _, _ = open_clip.create_model_and_transforms(
-        cfg["model"]["clip_model"], pretrained=cfg["model"]["clip_pretrained"]
+        cfg["model"]["clip_model"], pretrained=cfg["model"]["clip_pretrained"],
     )
     clip_model = clip_model.to(device).eval()
     tokenizer = open_clip.get_tokenizer(cfg["model"]["clip_model"])
-    prompts = cfg["training"]["normal_prompts"]
-    text_embeds = encode_text_prompts(prompts, clip_model, tokenizer, device)
-    text_avg = text_embeds.mean(dim=0, keepdim=True).cpu().numpy()  # (1, 512)
+    text_embeds = encode_text_prompts(
+        cfg["training"]["normal_prompts"], clip_model, tokenizer, device,
+    )
+    text_avg = F.normalize(text_embeds.mean(dim=0, keepdim=True), dim=-1).cpu().numpy()
 
-    # ── Extract skeleton ──
-    print(f"[INFO] Extracting skeleton from {video_path}...")
+    print(f"[INFO] Extracting skeleton: {video_path}")
     skeleton, _, _ = extract_skeleton(video_path, cfg)
     if skeleton is None:
         print("[ERROR] Skeleton extraction failed.")
         return np.array([])
 
-    # ── Build clips ──
-    fps = cfg["data"]["fps"]
-    clips = build_clips(
-        skeleton, fps,
-        cfg["data"]["window_sec"],
-        cfg["data"]["stride_sec"],
-        cfg["data"]["frame_step"],
-    )
+    clips = build_clips(skeleton, cfg)
     if not clips:
-        print("[ERROR] No clips generated.")
+        print("[ERROR] No clips.")
         return np.array([])
 
-    print(f"[INFO] {len(clips)} clips generated")
+    print(f"[INFO] {len(clips)} clips, fusion={inf['fusion']}")
 
-    # ── Inference ──
-    scores_raw = []
+    xs, zs = [], []
     with torch.no_grad():
         for clip in clips:
-            N, J, D = clip.shape
-            points = torch.tensor(clip.reshape(N * J, D),
-                                  dtype=torch.float32).unsqueeze(0).to(device)  # (1, N*J, 7)
-            x = backbone(points)
+            t = torch.tensor(clip, dtype=torch.float32).unsqueeze(0).to(device)
+            x = backbone(t)
             z = adapter(x)
+            xs.append(x.cpu().numpy())
+            zs.append(z.cpu().numpy())
 
-            x_np = x.cpu().numpy()
-            z_np = z.cpu().numpy()
+    all_x = np.concatenate(xs, axis=0)
+    all_z = np.concatenate(zs, axis=0)
 
-            mahal = mahalanobis_diag(x_np, mu, std)
-            prompt_sim = (z_np @ text_avg.T).squeeze()
-            score = compute_normality_score(
-                mahal, np.array([prompt_sim]),
-                cfg["inference"]["mahal_gamma"],
-                cfg["model"]["feature_dim"],
-            )
-            scores_raw.append(float(score[0]))
+    scores = compute_clip_scores(
+        all_x, all_z, text_avg,
+        stats["mu_x"], stats["std_x"],
+        stats["mu_z"], stats["std_z"],
+        inf["gamma_x"], inf["gamma_z"],
+        inf["fusion"], feat_dim, inf.get("stats_eps", 1e-8),
+    )
 
-    scores_raw = np.array(scores_raw)
+    smooth_n = inf.get("smooth_clips", 3)
+    norm_smooth = temporal_smooth(scores["normality"], window=smooth_n)
+    anom_smooth = 1.0 - norm_smooth
 
-    # ── Temporal smoothing ──
-    smooth_window = max(1, cfg["inference"]["smooth_window_sec"] //
-                        cfg["data"]["stride_sec"])
-    scores_smooth = temporal_smooth(scores_raw, window=smooth_window)
-
-    # ── Save outputs ──
     out_dir = Path("outputs")
     out_dir.mkdir(exist_ok=True)
-
     stride_sec = cfg["data"]["stride_sec"]
-    times = [i * stride_sec for i in range(len(scores_smooth))]
+    times = [i * stride_sec for i in range(len(norm_smooth))]
 
-    import csv
     csv_path = out_dir / "scores.csv"
     with open(csv_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["clip_idx", "start_sec", "normality_score_raw", "normality_score_smooth"])
-        for i, (t, sr, ss) in enumerate(zip(times, scores_raw, scores_smooth)):
-            writer.writerow([i, t, f"{sr:.4f}", f"{ss:.4f}"])
-    print(f"[DONE] Scores saved → {csv_path}")
+        w = csv.writer(f)
+        w.writerow([
+            "clip_idx", "start_sec",
+            "score_x", "score_z", "score_text",
+            "normality", "anomaly",
+            "normality_smooth", "anomaly_smooth",
+        ])
+        for i, t in enumerate(times):
+            w.writerow([
+                i, t,
+                f"{scores['score_x'][i]:.4f}",
+                f"{scores['score_z'][i]:.4f}",
+                f"{scores['score_text'][i]:.4f}",
+                f"{scores['normality'][i]:.4f}",
+                f"{scores['anomaly'][i]:.4f}",
+                f"{norm_smooth[i]:.4f}",
+                f"{anom_smooth[i]:.4f}",
+            ])
+    print(f"[DONE] CSV → {csv_path}")
 
-    _plot_scores(times, scores_raw, scores_smooth, out_dir)
+    _plot_timeline(times, scores["normality"], norm_smooth, out_dir)
+    return norm_smooth
 
-    return scores_smooth
 
-
-def _plot_scores(times, raw, smooth, out_dir):
+def _plot_timeline(times, raw, smooth, out_dir):
     try:
         import matplotlib.pyplot as plt
     except ImportError:
@@ -139,16 +132,16 @@ def _plot_scores(times, raw, smooth, out_dir):
 
     plt.figure(figsize=(12, 4))
     plt.plot(times, raw, alpha=0.4, color="steelblue", label="Raw")
-    plt.plot(times, smooth, color="steelblue", linewidth=2, label="Smoothed")
-    plt.axhline(0.5, color="gray", linestyle="--", linewidth=1, alpha=0.7)
+    plt.plot(times, smooth, color="steelblue", linewidth=2, label=f"Smooth ({len(smooth)} clips)")
+    plt.axhline(0.5, color="gray", linestyle="--", linewidth=1)
     plt.xlabel("Time (sec)")
-    plt.ylabel("Study Normality Score")
-    plt.title("Study Normality Score over Time")
+    plt.ylabel("Normality score")
+    plt.title("Study Normality Score")
     plt.ylim(0, 1)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(out_dir / "score_plot.png", dpi=150)
-    print(f"[DONE] Plot saved → {out_dir / 'score_plot.png'}")
+    plt.savefig(out_dir / "score_timeline.png", dpi=150)
+    print(f"[DONE] Timeline → {out_dir / 'score_timeline.png'}")
     plt.close()
 
 

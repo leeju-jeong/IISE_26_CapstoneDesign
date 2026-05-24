@@ -1,12 +1,5 @@
 """
-Evaluation script: AUROC + t-SNE
-
-실행:
-  python src/evaluate.py --data_root data/pilot --config configs/default.yaml
-
-출력:
-  - AUROC (normal vs OOD)
-  - t-SNE 시각화 (outputs/tsne.png)
+Evaluation: AUROC, AUPRC, t-SNE, score timeline
 """
 import argparse
 from pathlib import Path
@@ -14,119 +7,112 @@ from pathlib import Path
 import numpy as np
 import open_clip
 import torch
+import torch.nn.functional as F
 import yaml
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import average_precision_score, roc_auc_score
 from torch.utils.data import DataLoader
 
 from dataset import StudyDataset
-from models import MLPAdapter, MotionBERTExtractor
-from utils import (compute_normality_score, encode_text_prompts,
-                   mahalanobis_diag)
+from models import MLPAdapter, build_motionbert_from_cfg
+from utils import (
+    compute_clip_scores,
+    encode_text_prompts,
+    load_stats,
+    temporal_smooth,
+)
 
 
-def evaluate(cfg: dict, data_root: str, ckpt_dir: str):
-    device = cfg["training"]["device"]
-    ckpt_dir = Path(ckpt_dir)
-
-    # ── Load models ──
-    backbone = MotionBERTExtractor(
-        feature_dim=cfg["model"]["feature_dim"],
-        n_frames=cfg["model"]["n_frames"],
-        n_joints=cfg["model"]["n_joints"],
-        ckpt_path=cfg["model"]["motionbert_ckpt"],
-        freeze=False,
-    ).to(device)
-    backbone.load_state_dict(torch.load(ckpt_dir / "backbone.pth", map_location=device))
+def _load_models(cfg, ckpt_dir, device):
+    backbone = build_motionbert_from_cfg(cfg).to(device)
     backbone.eval()
 
     adapter = MLPAdapter(
         feature_dim=cfg["model"]["feature_dim"],
         hidden_dim=cfg["model"]["adapter_hidden"],
         clip_dim=cfg["model"]["clip_dim"],
+        dropout=cfg["model"].get("adapter_dropout", 0.1),
     ).to(device)
-    adapter.load_state_dict(torch.load(ckpt_dir / "adapter.pth", map_location=device))
+    adapter.load_state_dict(
+        torch.load(ckpt_dir / "adapter.pth", map_location=device, weights_only=True),
+    )
     adapter.eval()
+    return backbone, adapter
 
-    stats = np.load(ckpt_dir / "stats.npz")
-    mu, std = stats["mu"], stats["std"]
 
-    # ── CLIP text embeddings ──
+def evaluate(cfg: dict, data_root: str, ckpt_dir: str):
+    device = cfg["training"]["device"]
+    ckpt_dir = Path(ckpt_dir)
+    inf = cfg["inference"]
+    feat_dim = cfg["model"]["feature_dim"]
+
+    backbone, adapter = _load_models(cfg, ckpt_dir, device)
+    stats = load_stats(ckpt_dir / "stats.npz")
+
     clip_model, _, _ = open_clip.create_model_and_transforms(
-        cfg["model"]["clip_model"], pretrained=cfg["model"]["clip_pretrained"]
+        cfg["model"]["clip_model"], pretrained=cfg["model"]["clip_pretrained"],
     )
     clip_model = clip_model.to(device).eval()
     tokenizer = open_clip.get_tokenizer(cfg["model"]["clip_model"])
-    prompts = cfg["training"]["normal_prompts"]
-    text_embeds = encode_text_prompts(prompts, clip_model, tokenizer, device)
-    text_avg = text_embeds.mean(dim=0, keepdim=True)  # (1, 512)
+    text_embeds = encode_text_prompts(
+        cfg["training"]["normal_prompts"], clip_model, tokenizer, device,
+    )
+    text_avg = F.normalize(text_embeds.mean(dim=0, keepdim=True), dim=-1).cpu().numpy()
 
-    # ── Test dataset (normal + OOD) ──
     test_ds = StudyDataset(data_root, cfg, split="test", normal_only=False)
     test_loader = DataLoader(test_ds, batch_size=64, shuffle=False, num_workers=4)
 
-    all_scores = []
-    all_labels = []
+    all_x, all_z, all_labels = [], [], []
 
     with torch.no_grad():
-        for points, binary_labels, _ in test_loader:
-            points = points.to(device)
-            x = backbone(points)                     # (B, feature_dim)
-            z = adapter(x)                           # (B, 512)
-
-            x_np = x.cpu().numpy()
-            z_np = z.cpu().numpy()
-            t_np = text_avg.cpu().numpy()            # (1, 512)
-
-            mahal = mahalanobis_diag(x_np, mu, std)          # (B,)
-            prompt_sim = (z_np @ t_np.T).squeeze(-1)          # (B,)
-            scores = compute_normality_score(
-                mahal, prompt_sim,
-                cfg["inference"]["mahal_gamma"],
-                cfg["model"]["feature_dim"],
-            )
-            all_scores.extend(scores.tolist())
+        for clips, binary_labels, _ in test_loader:
+            clips = clips.to(device)
+            x = backbone(clips)
+            z = adapter(x)
+            all_x.append(x.cpu().numpy())
+            all_z.append(z.cpu().numpy())
             all_labels.extend(binary_labels.tolist())
 
-    all_scores = np.array(all_scores)
-    all_labels = np.array(all_labels)  # 0=normal, 1=OOD
+    all_x = np.concatenate(all_x, axis=0)
+    all_z = np.concatenate(all_z, axis=0)
+    all_labels = np.array(all_labels)
 
-    # AUROC: higher normality score → normal (so flip for sklearn)
-    auroc = roc_auc_score(all_labels, -all_scores)
-    print(f"[RESULT] AUROC = {auroc:.4f}")
+    scores = compute_clip_scores(
+        all_x, all_z, text_avg,
+        stats["mu_x"], stats["std_x"],
+        stats["mu_z"], stats["std_z"],
+        inf["gamma_x"], inf["gamma_z"],
+        inf["fusion"], feat_dim, inf.get("stats_eps", 1e-8),
+    )
 
-    # ── t-SNE ──
-    _plot_tsne(cfg, data_root, backbone, device, ckpt_dir)
+    anomaly = scores["anomaly"]
+    auroc = roc_auc_score(all_labels, anomaly)
+    auprc = average_precision_score(all_labels, anomaly)
+    print(f"[RESULT] fusion={inf['fusion']}")
+    print(f"[RESULT] AUROC  = {auroc:.4f}")
+    print(f"[RESULT] AUPRC  = {auprc:.4f}")
 
-    return auroc
+    out_dir = Path("outputs")
+    out_dir.mkdir(exist_ok=True)
+    _plot_tsne(all_z, all_labels, out_dir)
+    _plot_timeline(scores["normality"], all_labels, out_dir)
+    _plot_score_hist(scores["normality"], all_labels, out_dir)
+
+    return {"auroc": auroc, "auprc": auprc}
 
 
-def _plot_tsne(cfg, data_root, backbone, device, ckpt_dir):
+def _plot_tsne(feats, labels, out_dir):
     try:
         from sklearn.manifold import TSNE
         import matplotlib.pyplot as plt
     except ImportError:
-        print("[WARN] sklearn/matplotlib not installed, skipping t-SNE")
+        print("[WARN] skip t-SNE")
         return
 
-    test_ds = StudyDataset(data_root, cfg, split="test", normal_only=False)
-    loader = DataLoader(test_ds, batch_size=64, shuffle=False)
-
-    feats, labels = [], []
-    backbone.eval()
-    with torch.no_grad():
-        for points, binary, _ in loader:
-            x = backbone(points.to(device)).cpu().numpy()
-            feats.append(x)
-            labels.extend(binary.tolist())
-
-    feats = np.concatenate(feats, axis=0)
-    labels = np.array(labels)
-
-    tsne = TSNE(n_components=2, random_state=42, perplexity=30)
-    emb = tsne.fit_transform(feats)
-
-    out_dir = Path("outputs")
-    out_dir.mkdir(exist_ok=True)
+    n = len(feats)
+    if n < 5:
+        return
+    perp = min(30, n - 1)
+    emb = TSNE(n_components=2, random_state=42, perplexity=perp).fit_transform(feats)
 
     plt.figure(figsize=(8, 6))
     plt.scatter(emb[labels == 0, 0], emb[labels == 0, 1],
@@ -134,10 +120,53 @@ def _plot_tsne(cfg, data_root, backbone, device, ckpt_dir):
     plt.scatter(emb[labels == 1, 0], emb[labels == 1, 1],
                 c="crimson", label="OOD", alpha=0.6, s=20)
     plt.legend()
-    plt.title("t-SNE: Feature Space (Normal vs OOD)")
+    plt.title("t-SNE: Adapter embedding (z)")
     plt.tight_layout()
     plt.savefig(out_dir / "tsne.png", dpi=150)
-    print(f"[DONE] t-SNE saved → {out_dir / 'tsne.png'}")
+    print(f"[DONE] t-SNE → {out_dir / 'tsne.png'}")
+    plt.close()
+
+
+def _plot_timeline(normality, labels, out_dir):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+
+    idx = np.arange(len(normality))
+    plt.figure(figsize=(12, 4))
+    plt.plot(idx, normality, color="steelblue", alpha=0.7, label="Normality")
+    ood_idx = np.where(labels == 1)[0]
+    if len(ood_idx):
+        plt.scatter(ood_idx, normality[ood_idx], c="crimson", s=12, label="OOD clip", zorder=3)
+    plt.axhline(0.5, color="gray", linestyle="--", linewidth=1)
+    plt.xlabel("Clip index")
+    plt.ylabel("Normality score")
+    plt.title("Score timeline (test clips)")
+    plt.ylim(0, 1)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(out_dir / "score_timeline.png", dpi=150)
+    print(f"[DONE] Timeline → {out_dir / 'score_timeline.png'}")
+    plt.close()
+
+
+def _plot_score_hist(normality, labels, out_dir):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+
+    plt.figure(figsize=(8, 4))
+    plt.hist(normality[labels == 0], bins=30, alpha=0.6, label="Normal", color="steelblue")
+    plt.hist(normality[labels == 1], bins=30, alpha=0.6, label="OOD", color="crimson")
+    plt.xlabel("Normality score")
+    plt.ylabel("Count")
+    plt.legend()
+    plt.title("Normality distribution")
+    plt.tight_layout()
+    plt.savefig(out_dir / "score_plot.png", dpi=150)
+    print(f"[DONE] Hist → {out_dir / 'score_plot.png'}")
     plt.close()
 
 

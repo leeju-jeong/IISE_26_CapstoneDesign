@@ -16,6 +16,9 @@ venv/
 .ipynb_checkpoints/
 *.ipynb
 
+# Large model weights (>100MB, GitHub limit)
+models/motionbert/
+
 # Data & outputs
 data/
 *.mp4
