@@ -19,16 +19,12 @@ from tqdm import tqdm
 from dataset import StudyDataset
 from losses import adapter_training_loss
 from models import MLPAdapter, build_motionbert_from_cfg
-from utils import compute_stats, encode_text_prompts, save_stats
-
-
-@torch.no_grad()
-def collect_backbone_features(backbone, loader, device) -> np.ndarray:
-    feats = []
-    for clips, _, _ in loader:
-        clips = clips.to(device)
-        feats.append(backbone(clips).cpu().numpy())
-    return np.concatenate(feats, axis=0)
+from utils import (
+    collect_backbone_features,
+    compute_stats,
+    encode_text_prompts,
+    save_stats,
+)
 
 
 @torch.no_grad()

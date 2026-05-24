@@ -1,17 +1,9 @@
 """
 skeleton pkl + labels.csv → clip 단위 Dataset
 
-labels.csv:
-  start_sec, end_sec, label
-
-클립 (기본):
-  window=5s, stride=3s, sampled_fps=10 → frame_step=3 @ 30fps
-  clip shape: (50, 11, 7)
-
-비교용:
-  window=10s, stride=5s → (100, 11, 7)
-
-라벨: pkl의 frame_indices로 labels.csv와 매칭
+레이아웃:
+  flat    — data/videos/, data/skeletons/{video_id}.pkl, data/labels.csv
+  subject — data/subject_xx/*_skeleton.pkl (기존)
 """
 import pickle
 from pathlib import Path
@@ -22,11 +14,27 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
+JOINT_NAMES = [
+    "nose", "left_eye", "right_eye", "left_ear", "right_ear",
+    "left_shoulder", "right_shoulder",
+    "left_elbow", "right_elbow", "left_wrist", "right_wrist",
+]
+
 
 def frame_step_from_cfg(cfg: dict) -> int:
     fps = cfg["data"]["fps"]
     sampled = cfg["data"].get("sampled_fps", 10)
     return max(1, int(round(fps / sampled)))
+
+
+def stride_frames_from_cfg(cfg: dict) -> int:
+    """stride_sec=0 → non-overlapping (stride = window)."""
+    fps = cfg["data"]["fps"]
+    window_frames = cfg["data"]["window_sec"] * fps
+    stride_sec = cfg["data"]["stride_sec"]
+    if stride_sec == 0:
+        return window_frames
+    return int(stride_sec * fps)
 
 
 def n_frames_per_clip(cfg: dict) -> int:
@@ -40,14 +48,6 @@ def build_clips_with_indices(
     stride_frames: int,
     frame_step: int,
 ) -> list[tuple[np.ndarray, np.ndarray]]:
-    """
-    skeleton     : (T, J, 7)
-    frame_indices: (T,) 원본 비디오 프레임 번호
-
-    Returns list of (clip, clip_orig_indices)
-      clip             : (N, J, 7)   N = window_frames // frame_step
-      clip_orig_indices: (window_frames,)
-    """
     T = skeleton.shape[0]
     result = []
     start = 0
@@ -60,10 +60,9 @@ def build_clips_with_indices(
 
 
 def build_clips(skeleton: np.ndarray, cfg: dict) -> list[np.ndarray]:
-    """inference용 (labels 없음)."""
     fps = cfg["data"]["fps"]
     window_frames = cfg["data"]["window_sec"] * fps
-    stride_frames = cfg["data"]["stride_sec"] * fps
+    stride_frames = stride_frames_from_cfg(cfg)
     frame_step = frame_step_from_cfg(cfg)
     T = skeleton.shape[0]
     clips = []
@@ -74,110 +73,260 @@ def build_clips(skeleton: np.ndarray, cfg: dict) -> list[np.ndarray]:
     return clips
 
 
-def load_labels(labels_csv: str, fps: int) -> list[tuple[int, int, str]]:
+def load_labels_csv(labels_csv: str, fps: int,
+                    video_id: Optional[str] = None) -> list[tuple[int, int, str, str]]:
+    """Returns segments as (start_frame, end_frame, label, sublabel)."""
     df = pd.read_csv(labels_csv, skipinitialspace=True)
     df.columns = df.columns.str.strip()
     segments = []
     for _, row in df.iterrows():
+        if video_id is not None and "video_id" in df.columns:
+            if str(row["video_id"]).strip() != video_id:
+                continue
         start_f = int(float(row["start_sec"]) * fps)
         end_f = int(float(row["end_sec"]) * fps)
         label = str(row["label"]).strip()
-        segments.append((start_f, end_f, label))
+        if "sublabel" in df.columns and pd.notna(row["sublabel"]):
+            sublabel = str(int(float(row["sublabel"])))
+        else:
+            sublabel = ""
+        if label:
+            segments.append((start_f, end_f, label, sublabel))
     return segments
+
+
+def clip_annotation_from_orig_indices(
+    orig_indices: np.ndarray,
+    segments: list[tuple[int, int, str, str]],
+    boundary_margin: int,
+) -> Optional[tuple[str, str]]:
+    clip_start = int(orig_indices[0])
+    clip_end = int(orig_indices[-1])
+
+    for seg_start, seg_end, label, sublabel in segments:
+        if clip_start >= seg_start and clip_end <= seg_end:
+            if boundary_margin > 0 and (
+                clip_start - seg_start < boundary_margin
+                or seg_end - clip_end < boundary_margin
+            ):
+                return None
+            return label, sublabel
+    return None
 
 
 def clip_label_from_orig_indices(
     orig_indices: np.ndarray,
-    segments: list[tuple[int, int, str]],
+    segments: list[tuple[int, int, str, str]],
     boundary_margin: int,
 ) -> Optional[str]:
-    clip_start = int(orig_indices[0])
-    clip_end = int(orig_indices[-1])
+    ann = clip_annotation_from_orig_indices(orig_indices, segments, boundary_margin)
+    return ann[0] if ann else None
 
-    for seg_start, seg_end, label in segments:
-        if clip_start >= seg_start and clip_end <= seg_end:
-            if (clip_start - seg_start < boundary_margin or
-                    seg_end - clip_end < boundary_margin):
-                return None
-            return label
-    return None
+
+def _is_normal(label: str) -> bool:
+    return label.lower() in ("normal", "study", "studying")
 
 
 class StudyDataset(Dataset):
+    """subject 폴더 레이아웃 (기존)."""
+
     def __init__(self, data_root: str, cfg: dict, split: str = "train",
                  normal_only: bool = False):
         self.cfg = cfg
         self.normal_only = normal_only
+        self.meta: list[dict] = []
 
         fps = cfg["data"]["fps"]
-        window_sec = cfg["data"]["window_sec"]
-        stride_sec = cfg["data"]["stride_sec"]
+        window_frames = cfg["data"]["window_sec"] * fps
+        stride_frames = stride_frames_from_cfg(cfg)
         frame_step = frame_step_from_cfg(cfg)
-        window_frames = window_sec * fps
-        stride_frames = stride_sec * fps
         boundary_margin = int(cfg["data"].get("boundary_margin_sec", 5) * fps)
 
         data_root = Path(data_root)
         splits_path = data_root / "splits.yaml"
+        data_cfg = cfg.get("data", {})
 
         if splits_path.exists():
             import yaml
             with open(splits_path) as f:
                 splits = yaml.safe_load(f)
-            subjects = splits.get(split, [])
+            subject_names = splits.get(split, [])
+            subject_dirs = [data_root / s for s in subject_names]
+        elif data_cfg.get("subjects"):
+            subject_dirs = [data_root / s for s in data_cfg["subjects"]]
         else:
-            subjects = [d.name for d in sorted(data_root.iterdir()) if d.is_dir()]
+            subject_dirs = [
+                data_root / d.name
+                for d in sorted(data_root.iterdir())
+                if d.is_dir() and d.name not in ("videos", "skeletons")
+            ]
 
-        self.clips = []
-        self.labels = []
+        # data_root가 subject 폴더 자체인 경우 (예: data/people1/)
+        if not subject_dirs and list(data_root.glob("*_skeleton.pkl")):
+            subject_dirs = [data_root]
 
-        for subj in subjects:
-            subj_dir = data_root / subj
+        self.clips: list[np.ndarray] = []
+        self.labels: list[str] = []
+
+        for subj_dir in subject_dirs:
             if not subj_dir.is_dir():
                 continue
             for pkl_path in sorted(subj_dir.glob("*_skeleton.pkl")):
                 session_name = pkl_path.stem.replace("_skeleton", "")
                 csv_path = subj_dir / f"{session_name}_labels.csv"
-
-                with open(pkl_path, "rb") as f:
-                    data = pickle.load(f)
-
-                skeleton = data["skeleton"]
-                frame_indices = data.get("frame_indices")
-                if frame_indices is None:
-                    frame_indices = np.arange(skeleton.shape[0], dtype=np.int32)
-
-                if csv_path.exists():
-                    segments = load_labels(str(csv_path), fps)
-                else:
-                    total_orig = int(frame_indices[-1]) + 1
-                    segments = [(0, total_orig, "normal")]
-
-                clip_list = build_clips_with_indices(
-                    skeleton, frame_indices,
-                    window_frames, stride_frames, frame_step,
+                self._ingest_pkl(
+                    pkl_path, csv_path, fps, window_frames, stride_frames,
+                    frame_step, boundary_margin, video_id=session_name,
                 )
 
-                for clip, orig_indices in clip_list:
-                    label = clip_label_from_orig_indices(
-                        orig_indices, segments, boundary_margin,
-                    )
-                    if label is None:
-                        continue
-                    if normal_only and label != "normal":
-                        continue
-                    self.clips.append(clip)
-                    self.labels.append(label)
+        self._log_stats()
 
-        print(f"[Dataset] split={split}, clips={len(self.clips)}, "
-              f"normal={self.labels.count('normal')}, "
-              f"ood={sum(1 for l in self.labels if l != 'normal')}")
+    def _ingest_pkl(self, pkl_path, csv_path, fps, window_frames, stride_frames,
+                    frame_step, boundary_margin, video_id: str):
+        with open(pkl_path, "rb") as f:
+            data = pickle.load(f)
+
+        skeleton = data["skeleton"]
+        frame_indices = data.get("frame_indices")
+        if frame_indices is None:
+            frame_indices = np.arange(skeleton.shape[0], dtype=np.int32)
+
+        if csv_path.exists():
+            segments = load_labels_csv(str(csv_path), fps)
+        else:
+            total_orig = int(frame_indices[-1]) + 1
+            segments = [(0, total_orig, "normal", "")]
+
+        clip_list = build_clips_with_indices(
+            skeleton, frame_indices, window_frames, stride_frames, frame_step,
+        )
+
+        for clip, orig_indices in clip_list:
+            ann = clip_annotation_from_orig_indices(
+                orig_indices, segments, boundary_margin,
+            )
+            if ann is None:
+                continue
+            label, sublabel = ann
+            if self.normal_only and not _is_normal(label):
+                continue
+            start_sec = float(orig_indices[0]) / fps
+            end_sec = float(orig_indices[-1]) / fps
+            self.clips.append(clip)
+            self.labels.append(label)
+            self.meta.append({
+                "video_id": video_id,
+                "label": label,
+                "sublabel": sublabel,
+                "clip_start_sec": start_sec,
+                "clip_end_sec": end_sec,
+            })
+
+    def _log_stats(self):
+        print(f"[Dataset] clips={len(self.clips)}, "
+              f"normal={sum(1 for l in self.labels if _is_normal(l))}, "
+              f"ood={sum(1 for l in self.labels if not _is_normal(l))}")
 
     def __len__(self):
         return len(self.clips)
 
     def __getitem__(self, idx):
-        clip = self.clips[idx]               # (N, J, 7)
+        clip = self.clips[idx]
         label = self.labels[idx]
-        binary = 0 if label == "normal" else 1
+        binary = 0 if _is_normal(label) else 1
         return torch.tensor(clip, dtype=torch.float32), binary, label
+
+
+class FlatDataset(Dataset):
+    """
+    Task 1 flat 레이아웃:
+      data/skeletons/{video_id}.pkl + data/labels.csv
+    """
+
+    def __init__(self, data_root: str, cfg: dict, normal_only: bool = True):
+        self.cfg = cfg
+        self.normal_only = normal_only
+        self.meta: list[dict] = []
+
+        fps = cfg["data"]["fps"]
+        window_frames = cfg["data"]["window_sec"] * fps
+        stride_frames = stride_frames_from_cfg(cfg)
+        frame_step = frame_step_from_cfg(cfg)
+        boundary_margin = int(cfg["data"].get("boundary_margin_sec", 0) * fps)
+
+        data_root = Path(data_root)
+        skel_dir = data_root / "skeletons"
+        labels_csv = data_root / "labels.csv"
+
+        self.clips: list[np.ndarray] = []
+        self.labels: list[str] = []
+
+        if not skel_dir.is_dir():
+            print(f"[FlatDataset] skeletons dir missing: {skel_dir}")
+            return
+
+        pkl_paths = sorted(skel_dir.glob("*.pkl"))
+        if not pkl_paths:
+            print(f"[FlatDataset] no skeleton pkl in {skel_dir}")
+            return
+
+        for pkl_path in pkl_paths:
+            video_id = pkl_path.stem
+            with open(pkl_path, "rb") as f:
+                data = pickle.load(f)
+
+            skeleton = data["skeleton"]
+            frame_indices = data.get("frame_indices")
+            if frame_indices is None:
+                frame_indices = np.arange(skeleton.shape[0], dtype=np.int32)
+
+            if labels_csv.exists():
+                segments = load_labels_csv(str(labels_csv), fps, video_id=video_id)
+                if not segments:
+                    segments = [(0, int(frame_indices[-1]) + 1, "normal", "")]
+            else:
+                segments = [(0, int(frame_indices[-1]) + 1, "normal", "")]
+
+            clip_list = build_clips_with_indices(
+                skeleton, frame_indices, window_frames, stride_frames, frame_step,
+            )
+
+            for clip, orig_indices in clip_list:
+                ann = clip_annotation_from_orig_indices(
+                    orig_indices, segments, boundary_margin,
+                )
+                if ann is None:
+                    continue
+                label, sublabel = ann
+                if self.normal_only and not _is_normal(label):
+                    continue
+                start_sec = float(orig_indices[0]) / fps
+                end_sec = float(orig_indices[-1]) / fps
+                self.clips.append(clip)
+                self.labels.append(label)
+                self.meta.append({
+                    "video_id": video_id,
+                    "label": label,
+                    "sublabel": sublabel,
+                    "clip_start_sec": start_sec,
+                    "clip_end_sec": end_sec,
+                })
+
+        print(f"[FlatDataset] videos={len(pkl_paths)}, clips={len(self.clips)}")
+
+    def __len__(self):
+        return len(self.clips)
+
+    def __getitem__(self, idx):
+        clip = self.clips[idx]
+        label = self.labels[idx]
+        binary = 0 if _is_normal(label) else 1
+        return torch.tensor(clip, dtype=torch.float32), binary, label
+
+
+def build_dataset(data_root: str, cfg: dict, split: str = "train",
+                  normal_only: bool = False) -> Dataset:
+    layout = cfg.get("data", {}).get("layout", "subject")
+    if layout == "flat":
+        return FlatDataset(data_root, cfg, normal_only=normal_only)
+    return StudyDataset(data_root, cfg, split=split, normal_only=normal_only)

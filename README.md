@@ -43,17 +43,19 @@ python src/train.py --data_root data/ --config configs/default_10s.yaml
 
 **저장 위치:** `models/motionbert/lite_bert.bin`
 
+## Task 1 — 정상 분포 (μ_x, σ_x)
+
+데이터 준비: [data/README.md](data/README.md)
+
 ```bash
-# Hugging Face에서 받을 경우 (파일명은 자유)
-wget "https://huggingface.co/walterzhu/MotionBERT/resolve/main/checkpoint/pretrain/MB_lite/latest_epoch.bin" \
-  -O models/motionbert/lite_bert.bin
+python src/pose_extractor.py data/videos/ data/skeletons/ --config configs/task1.yaml
+python src/compute_stats_x.py --data_root data/ --config configs/task1.yaml
+python src/verify_stats_x.py --data_root data/ --config configs/task1.yaml
 ```
 
-- `.gitignore`에 `models/motionbert/` 포함 → Git에는 올리지 않음
-- 아키텍처: `MotionBERT/configs/pretrain/MB_lite.yaml` (`dim_feat=256`, `mlp_ratio=4`)
-- Lite로 바꾼 뒤에는 `adapter.pth`, `stats.npz` **재학습** 필요
+출력: `checkpoints/task1/stats_x.npz`, `outputs/task1_*.png`
 
-## 저장 파일
+## 저장 파일 (Task 2)
 
 - `checkpoints/adapter.pth`
 - `checkpoints/stats.npz` — `mu_x, std_x, mu_z, std_z`

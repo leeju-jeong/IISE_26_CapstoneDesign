@@ -16,30 +16,34 @@ venv/
 .ipynb_checkpoints/
 *.ipynb
 
-# Model weights (download locally; MB_release.bin exceeds GitHub 100MB limit)
+# ── 올리지 않음: 대용량 모델 가중치 (로컬 다운로드) ──
 models/motionbert/
 models/*.bin
 models/pose_landmarker.task
 
-# Data & outputs
+# ── 올리지 않음: 데이터·실험 산출물 ──
 data/
+!data/README.md
 *.mp4
 *.avi
 *.mov
 *.pkl
+checkpoints/
+outputs/
+runs/
+logs/
 *.npy
 *.npz
 *.pth
 *.pt
 *.ckpt
-outputs/
-runs/
-logs/
+
+# ── 올리지 않음: 로컬 IDE / AI 설정 ──
+.vscode/
+.idea/
+.claude/
+.cursor/
 
 # OS
 .DS_Store
 Thumbs.db
-
-# IDE
-.vscode/
-.idea/

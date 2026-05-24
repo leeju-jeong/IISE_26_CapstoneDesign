@@ -1,0 +1,37 @@
+# Task 1: MotionBERT-only baseline (2s window, 6fps, non-overlapping clips)
+data:
+  layout: flat              # flat | subject
+  fps: 30
+  window_sec: 2
+  stride_sec: 0               # 0 → non-overlapping (stride = window)
+  sampled_fps: 5
+  joints: [0, 2, 5, 7, 8, 11, 12, 13, 14, 15, 16]
+  n_joints: 11
+  joint_dim: 7
+  min_confidence: 0.3
+  conf_threshold: 0.5
+  boundary_margin_sec: 0      # Task1: 짧은 clip, 경계 제외 최소화
+
+model:
+  feature_dim: 512
+  clip_dim: 512
+  freeze_backbone: true
+  n_frames: 12                # window_sec * sampled_fps
+  n_joints: 11
+  n_joints_h36m: 17
+  motionbert_ckpt: "models/motionbert/lite_bert.bin"
+  motionbert_maxlen: 243
+  motionbert_dim_feat: 256
+  motionbert_mlp_ratio: 4
+  motionbert_depth: 5
+  motionbert_num_heads: 8
+  pooling: "mean"
+
+training:
+  device: "cuda"
+  batch_size: 32
+  checkpoint_dir: "checkpoints/task1"
+
+inference:
+  gamma_x: 1.0
+  stats_eps: 1.0e-8

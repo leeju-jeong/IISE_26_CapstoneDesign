@@ -27,6 +27,12 @@ DEFAULT_MODEL = str(Path(__file__).parent.parent / "models" / "pose_landmarker.t
 # MediaPipe 11 상체 관절 (configs data.joints 와 동일)
 DEFAULT_JOINTS = [0, 2, 5, 7, 8, 11, 12, 13, 14, 15, 16]
 
+JOINT_NAMES = [
+    "nose", "left_eye", "right_eye", "left_ear", "right_ear",
+    "left_shoulder", "right_shoulder",
+    "left_elbow", "right_elbow", "left_wrist", "right_wrist",
+]
+
 
 def _interpolate_low_confidence(skeleton: np.ndarray,
                                 conf_thresh: float) -> np.ndarray:
@@ -156,12 +162,16 @@ def extract_skeleton(video_path: str, cfg: dict,
     )
 
 
-def process_session(video_path: str, output_dir: str, cfg: dict) -> None:
+def process_session(video_path: str, output_dir: str, cfg: dict,
+                    flat: bool = False) -> None:
     video_path = Path(video_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    out_path = output_dir / (video_path.stem + "_skeleton.pkl")
+    if flat:
+        out_path = output_dir / (video_path.stem + ".pkl")
+    else:
+        out_path = output_dir / (video_path.stem + "_skeleton.pkl")
     if out_path.exists():
         print(f"[SKIP] Already exists: {out_path}")
         return
@@ -173,10 +183,12 @@ def process_session(video_path: str, output_dir: str, cfg: dict) -> None:
 
     with open(out_path, "wb") as f:
         pickle.dump({
+            "video_id": video_path.stem,
             "skeleton": skeleton,
             "frame_indices": frame_indices,
             "source": str(video_path),
             "fps": cfg["data"].get("fps", 30),
+            "joints": JOINT_NAMES if flat else None,
         }, f)
 
     valid_rate = (skeleton[:, :, 3].mean(axis=1) >= cfg["data"].get("min_confidence", 0.3)).mean() * 100
@@ -194,12 +206,14 @@ def main():
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
+    flat = cfg.get("data", {}).get("layout") == "flat"
+
     video_path = Path(args.video_path)
     if video_path.is_dir():
         for mp4 in sorted(video_path.glob("**/*.mp4")):
-            process_session(str(mp4), args.output_dir, cfg)
+            process_session(str(mp4), args.output_dir, cfg, flat=flat)
     else:
-        process_session(str(video_path), args.output_dir, cfg)
+        process_session(str(video_path), args.output_dir, cfg, flat=flat)
 
 
 if __name__ == "__main__":

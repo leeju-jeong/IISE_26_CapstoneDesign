@@ -105,6 +105,32 @@ def save_stats(path, mu_x, std_x, mu_z, std_z) -> None:
     np.savez(path, mu_x=mu_x, std_x=std_x, mu_z=mu_z, std_z=std_z)
 
 
+def save_stats_x(path, mu_x: np.ndarray, std_x: np.ndarray,
+                 all_x: np.ndarray | None = None) -> None:
+    payload = {"mu_x": mu_x, "std_x": std_x}
+    if all_x is not None:
+        payload["all_x"] = all_x
+    np.savez(path, **payload)
+
+
+def load_stats_x(path) -> dict[str, np.ndarray]:
+    data = np.load(path)
+    out = {"mu_x": data["mu_x"], "std_x": data["std_x"]}
+    if "all_x" in data:
+        out["all_x"] = data["all_x"]
+    return out
+
+
+@torch.no_grad()
+def collect_backbone_features(backbone, loader, device: str) -> np.ndarray:
+    feats = []
+    for batch in loader:
+        clips = batch[0] if isinstance(batch, (list, tuple)) else batch
+        clips = clips.to(device)
+        feats.append(backbone(clips).cpu().numpy())
+    return np.concatenate(feats, axis=0)
+
+
 def temporal_smooth(scores: np.ndarray, window: int = 3) -> np.ndarray:
     if window <= 1 or len(scores) < window:
         return scores.copy()
