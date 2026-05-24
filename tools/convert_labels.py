@@ -4,7 +4,7 @@ label_actions.py 출력 → v1 dataset 형식 변환
 label_actions.py 출력 (our format):
   start_sec, end_sec, action
   0.000, 12.460, 1
-  12.460, 15.460, 7
+  12.460, 15.460, 5
   350.000, 430.000, 6
 
 v1 dataset 기대 형식:
@@ -18,14 +18,14 @@ v1 dataset 기대 형식:
   → data/people1/recording_labels_v1.csv 생성
 
 매핑:
-  action 1~5, 7 → normal
-  action 6      → OOD_01  (딴짓/오프태스크)
+  action 1~5 → normal  (인강보기/키보드/필기/하이브리드/전환)
+  action 6   → OOD_01  (비집중)
 """
 import argparse
 import csv
 from pathlib import Path
 
-NORMAL_ACTIONS = {1, 2, 3, 4, 5, 7}
+NORMAL_ACTIONS = {1, 2, 3, 4, 5}
 
 
 def convert(input_path: str, output_path: str):

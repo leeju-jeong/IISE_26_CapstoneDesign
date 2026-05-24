@@ -112,7 +112,8 @@ def _normalize(skeleton: np.ndarray) -> np.ndarray:
     return (skeleton - mn) / rng
 
 
-def process_session(video_path: str, output_dir: str, cfg: dict) -> None:
+def process_session(video_path: str, output_dir: str, cfg: dict,
+                    model_path: str = DEFAULT_MODEL) -> None:
     video_path = Path(video_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -123,7 +124,7 @@ def process_session(video_path: str, output_dir: str, cfg: dict) -> None:
         return
 
     print(f"[INFO] Processing: {video_path.name}")
-    skeleton, frame_indices, total_frames = extract_skeleton(str(video_path), cfg)
+    skeleton, frame_indices, total_frames = extract_skeleton(str(video_path), cfg, model_path)
     if skeleton is None:
         return
 
@@ -146,15 +147,15 @@ def main():
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL)
     args = parser.parse_args()
 
-    with open(args.config) as f:
+    with open(args.config, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
     video_path = Path(args.video_path)
     if video_path.is_dir():
         for mp4 in sorted(video_path.glob("**/*.mp4")):
-            process_session(str(mp4), args.output_dir, cfg)
+            process_session(str(mp4), args.output_dir, cfg, args.model)
     else:
-        process_session(str(video_path), args.output_dir, cfg)
+        process_session(str(video_path), args.output_dir, cfg, args.model)
 
 
 if __name__ == "__main__":

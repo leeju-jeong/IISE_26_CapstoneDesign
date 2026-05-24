@@ -1,11 +1,11 @@
 """
-행동 어노테이션 툴 — 숫자키 toggle로 1~7번 행동 구간 기록
+행동 어노테이션 툴 — 숫자키 toggle로 1~6번 행동 구간 기록
 
 실행:
   python tools/label_actions.py --video data/people1/recording.mp4
 
 조작법:
-  1~7   : 행동 toggle
+  1~6   : 행동 toggle
             · 처음 누름  → 해당 행동 시작
             · 같은 키 다시 → 해당 행동 종료
             · 다른 번호 누름 → 현재 행동 종료 + 새 행동 즉시 시작
@@ -16,18 +16,17 @@
   Q     : 저장 없이 종료
 
 행동 코드:
-  1: 타이핑          (Training: 정상)
-  2: 강의시청        (Training: 정상)
-  3: 필기            (Training: 정상)
-  4: 문제풀기        (Training: 정상)
-  5: 패드보기        (Training: 정상)
-  6: 딴짓/오프태스크 (Inference only — Training 제외)
-  7: 전환/연결       (Training: 정상, 갭 자동 삽입)
+  1: 인강보기   (Training: 정상)
+  2: 키보드     (Training: 정상)
+  3: 필기       (Training: 정상)
+  4: 하이브리드 (Training: 정상)
+  5: 전환       (Training: 정상, 갭 자동 삽입)
+  6: 비집중     (Inference only — Training 제외)
 
 출력 CSV:
   start_sec, end_sec, action
   0.000, 12.460, 1
-  12.460, 15.460, 7   ← 갭 자동 삽입
+  12.460, 15.460, 5   ← 갭 자동 삽입
   15.460, 45.000, 2
 
 출력 파일 위치: --video 영상과 같은 폴더, {영상이름}_labels.csv
@@ -41,19 +40,18 @@ import cv2
 import numpy as np
 
 ACTION_NAMES = {
-    1: "Typing", 2: "Watching", 3: "Writing",
-    4: "Problem", 5: "Pad", 6: "OFF-TASK", 7: "Transition",
+    1: "Watching", 2: "Keyboard", 3: "Writing",
+    4: "Hybrid", 5: "Transition", 6: "OFF-TASK",
 }
 ACTION_COLORS = {
-    1: (60, 200, 60),
-    2: (200, 140, 40),
+    1: (200, 140, 40),
+    2: (60, 200, 60),
     3: (40, 200, 200),
     4: (200, 60, 200),
-    5: (100, 200, 255),
+    5: (130, 130, 130),
     6: (30, 30, 220),
-    7: (130, 130, 130),
 }
-WINDOW = "Label Actions  [1-7 toggle | SPACE | A/D:seek | Z:undo | S:save | Q:quit]"
+WINDOW = "Label Actions  [1-6 toggle | SPACE | A/D:seek | Z:undo | S:save | Q:quit]"
 
 
 class Labeler:
@@ -112,11 +110,11 @@ class Labeler:
         prev_end = 0.0
         for start, end, action in segs:
             if start > prev_end + gap_min:
-                filled.append((prev_end, start, 7))
+                filled.append((prev_end, start, 5))  # 전환으로 갭 채움
             filled.append((start, end, action))
             prev_end = end
         if total_sec - prev_end > gap_min:
-            filled.append((prev_end, total_sec, 7))
+            filled.append((prev_end, total_sec, 5))
         return filled
 
 
@@ -163,7 +161,7 @@ def draw_ui(frame, cur_sec, total_sec, labeler: Labeler, paused: bool) -> np.nda
         cv2.putText(d, f"[{a}] {ACTION_NAMES[a]}  {labeler.active_start:.2f}s → {cur_sec:.2f}s  ({dur:.1f}s)",
                     (8, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.65, ACTION_COLORS[a], 2)
     else:
-        cv2.putText(d, "Press 1-7 to start  |  same key to end",
+        cv2.putText(d, "Press 1-6 to start  |  same key to end",
                     (8, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (170, 170, 170), 1)
 
     n = len(labeler.segments)
@@ -193,7 +191,7 @@ def save_csv(segments: list, path: str):
         dur_by_action[a] += e - s
     for a in sorted(dur_by_action):
         dur = dur_by_action[a]
-        tag = " ← anomaly (inference only)" if a == 6 else ""
+        tag = " ← OOD (inference only)" if a == 6 else ""
         print(f"  [{a}] {ACTION_NAMES[a]:15s}  {dur:5.1f}s{tag}")
 
 
@@ -239,9 +237,12 @@ def main():
         if not paused:
             ret, frame = cap.read()
             if not ret:
-                paused = True
-                cap.set(cv2.CAP_PROP_POS_FRAMES, total_f - 1)
-                ret, frame = cap.read()
+                # 영상 끝 → 자동 저장
+                labeler.finalize(cur_sec)
+                filled = labeler.fill_gaps(total_sec)
+                save_csv(filled, output_csv)
+                print("[INFO] 영상 종료 — 자동 저장됨")
+                break
             else:
                 cur_f = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
         else:
@@ -263,7 +264,7 @@ def main():
             cur_f = max(0, cur_f - int(fps * 5))
         elif key in (83, ord('d'), ord('D')):
             cur_f = min(total_f - 1, cur_f + int(fps * 5))
-        elif chr(key) in "1234567":
+        elif chr(key) in "123456":
             msg = labeler.press(int(chr(key)), cur_sec)
             if msg:
                 print(msg)

@@ -17,11 +17,9 @@ venv/
 *.ipynb
 
 # Data & outputs
-data/
 *.mp4
 *.avi
 *.mov
-*.pkl
 *.npy
 *.npz
 *.pth
@@ -30,6 +28,11 @@ data/
 outputs/
 runs/
 logs/
+
+# 영상만 제외, pkl/csv는 올림
+data/**/*.mp4
+data/**/*.mov
+data/**/*.avi
 
 # OS
 .DS_Store
