@@ -41,7 +41,14 @@ python src/train.py --data_root data/ --config configs/default_10s.yaml
 
 ## MotionBERT 가중치 (MB_lite)
 
-**저장 위치:** `models/motionbert/lite_bert.bin`
+**저장 위치:** `models/motionbert/lite_bert.bin` (git 미포함 — 직접 다운로드 필요)
+
+| 모델 | 크기 | 다운로드 |
+|---|---|---|
+| MotionBERT-Lite | 61MB | [OneDrive](https://1drv.ms/f/s!AvAdh0LSjEOlgS27Ydcbpxlkl0ng?e=rq2Btn) |
+| MotionBERT (full) | 162MB | [OneDrive](https://1drv.ms/f/s!AvAdh0LSjEOlgS425shtVi9e5reN?e=6UeBa2) |
+
+다운로드 후 압축 해제 → `latest_epoch.bin`을 `models/motionbert/lite_bert.bin`으로 저장.
 
 ## Task 1 — 정상 분포 (μ_x, σ_x)
 

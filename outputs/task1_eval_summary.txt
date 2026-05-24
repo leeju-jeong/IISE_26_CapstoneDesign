@@ -1,0 +1,7 @@
+clips: 234
+normal: 226
+ood: 8
+AUROC: 0.3966
+AUPRC: 0.0309
+score_x normal mean: 0.4636
+score_x ood mean: 0.5279

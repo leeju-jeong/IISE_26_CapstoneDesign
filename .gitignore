@@ -23,9 +23,13 @@ models/pose_landmarker.task
 
 # ── 올리지 않음: 실험 산출물 ──
 checkpoints/
-outputs/
 runs/
 logs/
+# outputs: 그래프/CSV/TXT는 올림
+!outputs/
+!outputs/*.png
+!outputs/*.csv
+!outputs/*.txt
 
 # ── 영상만 제외, pkl/csv는 올림 ──
 *.mp4
