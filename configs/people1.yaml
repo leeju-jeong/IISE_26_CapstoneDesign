@@ -1,0 +1,37 @@
+# Task 1 — data/people1 (subject layout, action 1-5=normal, 6=ood)
+data:
+  layout: subject
+  fps: 30
+  window_sec: 5
+  stride_sec: 0
+  sampled_fps: 5
+  joints: [0, 2, 5, 7, 8, 11, 12, 13, 14, 15, 16]
+  n_joints: 11
+  joint_dim: 7
+  min_confidence: 0.3
+  conf_threshold: 0.5
+  boundary_margin_sec: 0
+
+model:
+  feature_dim: 512
+  clip_dim: 512
+  freeze_backbone: true
+  n_frames: 25
+  n_joints: 11
+  n_joints_h36m: 17
+  motionbert_ckpt: "models/motionbert/lite_bert.bin"
+  motionbert_maxlen: 243
+  motionbert_dim_feat: 256
+  motionbert_mlp_ratio: 4
+  motionbert_depth: 5
+  motionbert_num_heads: 8
+  pooling: "mean"
+
+training:
+  device: "cuda:1"
+  batch_size: 32
+  checkpoint_dir: "checkpoints/task1/people1_5s"
+
+inference:
+  gamma_x: 1.0
+  stats_eps: 1.0e-8

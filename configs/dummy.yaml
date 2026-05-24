@@ -1,11 +1,14 @@
 data:
   fps: 30
-  frame_step: 3
-  window_sec: 10
-  stride_sec: 5
+  sampled_fps: 10
+  window_sec: 5
+  stride_sec: 3
   joints: [0, 2, 5, 7, 8, 11, 12, 13, 14, 15, 16]
+  n_joints: 11
   joint_dim: 7
-  min_confidence: 0.5
+  min_confidence: 0.3
+  conf_threshold: 0.5
+  boundary_margin_sec: 5
 
 model:
   feature_dim: 512
@@ -13,10 +16,18 @@ model:
   clip_model: "ViT-B-32"
   clip_pretrained: "openai"
   adapter_hidden: 512
+  adapter_dropout: 0.1
   freeze_backbone: true
-  n_frames: 100
+  n_frames: 50
   n_joints: 11
-  motionbert_ckpt: "models/motionbert/MB_release.bin"
+  n_joints_h36m: 17
+  motionbert_ckpt: "models/motionbert/lite_bert.bin"
+  motionbert_maxlen: 243
+  motionbert_dim_feat: 256
+  motionbert_mlp_ratio: 4
+  motionbert_depth: 5
+  motionbert_num_heads: 8
+  pooling: "mean"
 
 training:
   device: "cuda"
@@ -24,15 +35,20 @@ training:
   lr: 0.0001
   weight_decay: 0.00001
   epochs: 5
-  temperature: 0.07
+  preserve_weight: 0.1
   checkpoint_dir: "checkpoints/dummy"
   normal_prompts:
-    - "A student is sitting upright and focusing on studying."
-    - "A learner is looking at the screen or desk material with sustained attention."
-    - "A student is engaged in a normal self-study session."
-    - "A person is reading or writing at a desk in a focused manner."
+    - "a student is studying"
+    - "a student is reading a book"
+    - "a student is writing notes"
+    - "a student is solving problems at a desk"
+    - "a student is looking at a laptop for studying"
+  ood_prompts: []
+  ood_loss_weight: 0.0
 
 inference:
-  mahal_gamma: 1.0
-  smooth_window_sec: 10
-  smooth_stride_sec: 5
+  fusion: "linear_40_40_20"
+  gamma_x: 1.0
+  gamma_z: 1.0
+  stats_eps: 1.0e-8
+  smooth_clips: 3

@@ -1,16 +1,11 @@
 """
-Training script
-
-실행:
-  python src/train.py --data_root data/pilot --config configs/default.yaml
-
-완료 후 저장:
-  checkpoints/backbone.pth
-  checkpoints/adapter.pth
-  checkpoints/stats.npz  (μ, σ for Mahalanobis)
+Training pipeline:
+  [5] 정상 train → μ_x, σ_x
+  [6] Adapter 학습 (align + preserve)
+  [7] 정상 train → μ_z, σ_z
+  저장: adapter.pth, stats.npz
 """
 import argparse
-import os
 from pathlib import Path
 
 import numpy as np
@@ -22,9 +17,25 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from dataset import StudyDataset
-from losses import contrastive_loss
-from models import MLPAdapter, MotionBERTExtractor
-from utils import compute_stats, encode_text_prompts
+from losses import adapter_training_loss
+from models import MLPAdapter, build_motionbert_from_cfg
+from utils import (
+    collect_backbone_features,
+    compute_stats,
+    encode_text_prompts,
+    save_stats,
+)
+
+
+@torch.no_grad()
+def collect_adapter_embeddings(backbone, adapter, loader, device) -> np.ndarray:
+    zs = []
+    for clips, _, _ in loader:
+        clips = clips.to(device)
+        x = backbone(clips)
+        z = adapter(x)
+        zs.append(z.cpu().numpy())
+    return np.concatenate(zs, axis=0)
 
 
 def train(cfg: dict, data_root: str):
@@ -32,92 +43,97 @@ def train(cfg: dict, data_root: str):
     ckpt_dir = Path(cfg["training"]["checkpoint_dir"])
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── CLIP text encoder (frozen) ──
     clip_model, _, _ = open_clip.create_model_and_transforms(
-        cfg["model"]["clip_model"], pretrained=cfg["model"]["clip_pretrained"]
+        cfg["model"]["clip_model"], pretrained=cfg["model"]["clip_pretrained"],
     )
     clip_model = clip_model.to(device).eval()
     tokenizer = open_clip.get_tokenizer(cfg["model"]["clip_model"])
 
-    prompts = cfg["training"]["normal_prompts"]
-    text_embeds = encode_text_prompts(prompts, clip_model, tokenizer, device)  # (P, 512)
-    print(f"[CLIP] text embeddings: {text_embeds.shape}")
+    text_embeds = encode_text_prompts(
+        cfg["training"]["normal_prompts"], clip_model, tokenizer, device,
+    )
+    text_avg = F.normalize(text_embeds.mean(dim=0, keepdim=True), dim=-1)
 
-    # ── Models ──
-    backbone = MotionBERTExtractor(
-        feature_dim=cfg["model"]["feature_dim"],
-        n_frames=cfg["model"]["n_frames"],
-        n_joints=cfg["model"]["n_joints"],
-        ckpt_path=cfg["model"]["motionbert_ckpt"],
-        freeze=cfg["model"]["freeze_backbone"],
-    ).to(device)
+    ood_prompts = cfg["training"].get("ood_prompts") or []
+    ood_embeds = None
+    if ood_prompts:
+        ood_embeds = encode_text_prompts(ood_prompts, clip_model, tokenizer, device)
+
+    backbone = build_motionbert_from_cfg(cfg).to(device)
+    backbone.eval()
 
     adapter = MLPAdapter(
         feature_dim=cfg["model"]["feature_dim"],
         hidden_dim=cfg["model"]["adapter_hidden"],
         clip_dim=cfg["model"]["clip_dim"],
+        dropout=cfg["model"].get("adapter_dropout", 0.1),
     ).to(device)
 
-    trainable = list(filter(lambda p: p.requires_grad, backbone.parameters()))
-    trainable += list(adapter.parameters())
+    train_ds = StudyDataset(data_root, cfg, split="train", normal_only=True)
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=cfg["training"]["batch_size"],
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+    )
+    stats_loader = DataLoader(train_ds, batch_size=64, shuffle=False)
+
+    # [5] μ_x, σ_x
+    print("[INFO] Computing μ_x, σ_x on normal train clips...")
+    all_x = collect_backbone_features(backbone, stats_loader, device)
+    mu_x, std_x = compute_stats(all_x)
+    print(f"  x stats: {all_x.shape[0]} samples")
+
+    preserve_w = cfg["training"].get("preserve_weight", 0.1)
+    ood_w = cfg["training"].get("ood_loss_weight", 0.0)
     optimizer = torch.optim.AdamW(
-        trainable,
+        adapter.parameters(),
         lr=cfg["training"]["lr"],
         weight_decay=cfg["training"]["weight_decay"],
     )
 
-    # ── Dataset ──
-    train_ds = StudyDataset(data_root, cfg, split="train", normal_only=True)
-    train_loader = DataLoader(
-        train_ds, batch_size=cfg["training"]["batch_size"],
-        shuffle=True, num_workers=4, pin_memory=True,
-    )
-
-    temp = cfg["training"]["temperature"]
     best_loss = float("inf")
 
-    # ── Training loop ──
+    # [6] Adapter 학습
     for epoch in range(cfg["training"]["epochs"]):
-        backbone.train()
         adapter.train()
         epoch_loss = 0.0
 
-        for points, _, _ in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
-            points = points.to(device)          # (B, N*J, 7)
-            x = backbone(points)                # (B, feature_dim)
-            z = adapter(x)                      # (B, 512) normalized
-            loss = contrastive_loss(z, text_embeds, temp)
+        for clips, _, _ in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
+            clips = clips.to(device)
+            with torch.no_grad():
+                x = backbone(clips)
+            z = adapter(x)
+            loss, _ = adapter_training_loss(
+                z, x, text_avg, preserve_w, ood_embeds, ood_w,
+            )
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()
 
-        avg_loss = epoch_loss / len(train_loader)
+        avg_loss = epoch_loss / max(len(train_loader), 1)
         print(f"Epoch [{epoch+1}/{cfg['training']['epochs']}] loss={avg_loss:.4f}")
 
         if avg_loss < best_loss:
             best_loss = avg_loss
-            torch.save(backbone.state_dict(), ckpt_dir / "backbone.pth")
             torch.save(adapter.state_dict(), ckpt_dir / "adapter.pth")
 
-    print(f"[DONE] Best loss: {best_loss:.4f} → saved to {ckpt_dir}")
+    print(f"[DONE] Best loss: {best_loss:.4f} → {ckpt_dir / 'adapter.pth'}")
 
-    # ── Compute μ, σ using BEST checkpoint (not last epoch) ──
-    print("[INFO] Computing Mahalanobis statistics from training data...")
-    backbone.load_state_dict(torch.load(ckpt_dir / "backbone.pth", map_location=device))
-    backbone.eval()
-    all_features = []
-    with torch.no_grad():
-        for points, _, _ in DataLoader(train_ds, batch_size=64, shuffle=False):
-            points = points.to(device)
-            x = backbone(points)
-            all_features.append(x.cpu().numpy())
+    # [7] μ_z, σ_z
+    print("[INFO] Computing μ_z, σ_z on normal train clips...")
+    adapter.load_state_dict(
+        torch.load(ckpt_dir / "adapter.pth", map_location=device, weights_only=True),
+    )
+    adapter.eval()
+    all_z = collect_adapter_embeddings(backbone, adapter, stats_loader, device)
+    mu_z, std_z = compute_stats(all_z)
 
-    all_features = np.concatenate(all_features, axis=0)  # (N, feature_dim)
-    mu, std = compute_stats(all_features)
-    np.savez(ckpt_dir / "stats.npz", mu=mu, std=std)
-    print(f"[DONE] stats.npz saved → mu: {mu.shape}, std: {std.shape}")
+    save_stats(ckpt_dir / "stats.npz", mu_x, std_x, mu_z, std_z)
+    print(f"[DONE] stats.npz → mu_x/std_x/mu_z/std_z shape {mu_x.shape}")
 
 
 def main():

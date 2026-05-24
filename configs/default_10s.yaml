@@ -1,9 +1,9 @@
+# 10s / 5s / 10fps 비교 설정 → clip (100, 11, 7)
 data:
   fps: 30
   sampled_fps: 10
-  window_sec: 5
-  stride_sec: 3
-  # 비교: window_sec=10, stride_sec=5, n_frames=100
+  window_sec: 10
+  stride_sec: 5
   joints: [0, 2, 5, 7, 8, 11, 12, 13, 14, 15, 16]
   n_joints: 11
   joint_dim: 7
@@ -19,10 +19,9 @@ model:
   adapter_hidden: 512
   adapter_dropout: 0.1
   freeze_backbone: true
-  n_frames: 50
+  n_frames: 100
   n_joints: 11
   n_joints_h36m: 17
-  # MB_lite (MotionBERT/configs/pretrain/MB_lite.yaml)
   motionbert_ckpt: "models/motionbert/lite_bert.bin"
   motionbert_maxlen: 243
   motionbert_dim_feat: 256
@@ -38,7 +37,7 @@ training:
   weight_decay: 0.00001
   epochs: 50
   preserve_weight: 0.1
-  checkpoint_dir: "checkpoints"
+  checkpoint_dir: "checkpoints_10s"
   normal_prompts:
     - "a student is studying"
     - "a student is reading a book"
@@ -49,8 +48,8 @@ training:
   ood_loss_weight: 0.0
 
 inference:
-  fusion: "linear_40_40_20"   # linear_50_50 | linear_40_40_20 | product
+  fusion: "linear_40_40_20"
   gamma_x: 1.0
   gamma_z: 1.0
   stats_eps: 1.0e-8
-  smooth_clips: 3             # 최근 N개 clip 이동 평균
+  smooth_clips: 3
