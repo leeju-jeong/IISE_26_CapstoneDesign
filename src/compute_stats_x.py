@@ -29,6 +29,16 @@ def compute_stats_x(cfg: dict, data_root: str) -> Path:
             "clip이 0개입니다. data/skeletons/*.pkl 과 data/labels.csv 를 확인하세요."
         )
 
+    train_ratio = cfg["data"].get("train_ratio", 1.0)
+    if train_ratio < 1.0:
+        sorted_idx = sorted(range(len(ds)), key=lambda i: ds.meta[i]["clip_start_sec"])
+        n_train = int(len(sorted_idx) * train_ratio)
+        train_idx = sorted_idx[:n_train]
+        ds.clips = [ds.clips[i] for i in train_idx]
+        ds.labels = [ds.labels[i] for i in train_idx]
+        ds.meta = [ds.meta[i] for i in train_idx]
+        print(f"[INFO] Temporal split: {n_train}/{len(sorted_idx)} clips for stats (first {train_ratio*100:.0f}%)")
+
     loader = DataLoader(
         ds, batch_size=cfg["training"].get("batch_size", 32), shuffle=False,
     )
@@ -50,7 +60,7 @@ def main():
     parser.add_argument("--config", type=str, default="configs/task1.yaml")
     args = parser.parse_args()
 
-    with open(args.config) as f:
+    with open(args.config, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
     compute_stats_x(cfg, args.data_root)

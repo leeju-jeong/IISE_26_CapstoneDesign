@@ -134,7 +134,7 @@ def main():
     parser.add_argument("--config", type=str, default="configs/people1.yaml")
     args = parser.parse_args()
 
-    with open(args.config) as f:
+    with open(args.config, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
     evaluate_task1(cfg, args.data_root)

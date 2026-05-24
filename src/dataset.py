@@ -78,6 +78,8 @@ def load_labels_csv(labels_csv: str, fps: int,
     """Returns segments as (start_frame, end_frame, label, sublabel)."""
     df = pd.read_csv(labels_csv, skipinitialspace=True)
     df.columns = df.columns.str.strip()
+    # support both "label" and "action" column names
+    label_col = next((c for c in ["label", "action"] if c in df.columns), df.columns[-1])
     segments = []
     for _, row in df.iterrows():
         if video_id is not None and "video_id" in df.columns:
@@ -85,7 +87,11 @@ def load_labels_csv(labels_csv: str, fps: int,
                 continue
         start_f = int(float(row["start_sec"]) * fps)
         end_f = int(float(row["end_sec"]) * fps)
-        label = str(row["label"]).strip()
+        raw = str(row[label_col]).strip()
+        try:
+            label = str(int(float(raw)))  # "3.0" → "3"
+        except ValueError:
+            label = raw
         if "sublabel" in df.columns and pd.notna(row["sublabel"]):
             sublabel = str(int(float(row["sublabel"])))
         else:
@@ -123,7 +129,9 @@ def clip_label_from_orig_indices(
     return ann[0] if ann else None
 
 
-def _is_normal(label: str) -> bool:
+def _is_normal(label: str, normal_ids: Optional[set] = None) -> bool:
+    if normal_ids is not None:
+        return label in normal_ids
     return label.lower() in ("normal", "study", "studying")
 
 
@@ -141,6 +149,9 @@ class StudyDataset(Dataset):
         stride_frames = stride_frames_from_cfg(cfg)
         frame_step = frame_step_from_cfg(cfg)
         boundary_margin = int(cfg["data"].get("boundary_margin_sec", 5) * fps)
+
+        raw_ids = cfg["data"].get("normal_action_ids")
+        self.normal_ids: Optional[set] = {str(a) for a in raw_ids} if raw_ids else None
 
         data_root = Path(data_root)
         splits_path = data_root / "splits.yaml"
@@ -174,6 +185,10 @@ class StudyDataset(Dataset):
             for pkl_path in sorted(subj_dir.glob("*_skeleton.pkl")):
                 session_name = pkl_path.stem.replace("_skeleton", "")
                 csv_path = subj_dir / f"{session_name}_labels.csv"
+                if not csv_path.exists():
+                    candidates = sorted(subj_dir.glob("*_labels.csv"))
+                    if candidates:
+                        csv_path = candidates[0]
                 self._ingest_pkl(
                     pkl_path, csv_path, fps, window_frames, stride_frames,
                     frame_step, boundary_margin, video_id=session_name,
@@ -208,7 +223,7 @@ class StudyDataset(Dataset):
             if ann is None:
                 continue
             label, sublabel = ann
-            if self.normal_only and not _is_normal(label):
+            if self.normal_only and not _is_normal(label, self.normal_ids):
                 continue
             start_sec = float(orig_indices[0]) / fps
             end_sec = float(orig_indices[-1]) / fps
@@ -224,8 +239,8 @@ class StudyDataset(Dataset):
 
     def _log_stats(self):
         print(f"[Dataset] clips={len(self.clips)}, "
-              f"normal={sum(1 for l in self.labels if _is_normal(l))}, "
-              f"ood={sum(1 for l in self.labels if not _is_normal(l))}")
+              f"normal={sum(1 for l in self.labels if _is_normal(l, self.normal_ids))}, "
+              f"ood={sum(1 for l in self.labels if not _is_normal(l, self.normal_ids))}")
 
     def __len__(self):
         return len(self.clips)
@@ -233,7 +248,7 @@ class StudyDataset(Dataset):
     def __getitem__(self, idx):
         clip = self.clips[idx]
         label = self.labels[idx]
-        binary = 0 if _is_normal(label) else 1
+        binary = 0 if _is_normal(label, self.normal_ids) else 1
         return torch.tensor(clip, dtype=torch.float32), binary, label
 
 
