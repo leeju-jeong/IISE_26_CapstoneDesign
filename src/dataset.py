@@ -39,15 +39,38 @@ def build_clips(skeleton: np.ndarray, clip_frames: int,
     return clips
 
 
+NORMAL_ACTION_IDS = {1, 2, 3, 4, 5, 7}  # 6 = OOD
+
+
 def load_labels(labels_csv: str, fps: int) -> list[tuple[int, int, str]]:
-    """Returns list of (start_frame, end_frame, label)."""
+    """Returns list of (start_frame, end_frame, label).
+    label_actions.py 출력(action 컬럼, 정수 1~7)과
+    구형 포맷(label 컬럼, "normal"/"OOD_XX") 모두 지원.
+    """
     df = pd.read_csv(labels_csv, skipinitialspace=True)
     df.columns = df.columns.str.strip()
+
+    # 컬럼명 자동 감지
+    if "action" in df.columns:
+        label_col = "action"
+    elif "label" in df.columns:
+        label_col = "label"
+    else:
+        raise ValueError(f"labels.csv에 'action' 또는 'label' 컬럼이 없습니다: {labels_csv}")
+
     segments = []
     for _, row in df.iterrows():
         start_f = int(float(row["start_sec"]) * fps)
-        end_f = int(float(row["end_sec"]) * fps)
-        label = str(row["label"]).strip()
+        end_f   = int(float(row["end_sec"])   * fps)
+        raw = str(row[label_col]).strip()
+
+        # 정수 action code (1~7) → "normal" / "OOD" 변환
+        try:
+            action_id = int(raw)
+            label = "normal" if action_id in NORMAL_ACTION_IDS else "OOD"
+        except ValueError:
+            label = raw  # "normal", "OOD_01" 등 문자열 그대로 사용
+
         segments.append((start_f, end_f, label))
     return segments
 

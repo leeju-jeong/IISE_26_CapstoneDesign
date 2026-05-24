@@ -43,7 +43,7 @@ def train(cfg: dict, data_root: str):
         train_ds,
         batch_size=64,
         shuffle=False,
-        num_workers=4,
+        num_workers=0,   # Windows 멀티프로세싱 오류 방지
         pin_memory=True,
     )
 

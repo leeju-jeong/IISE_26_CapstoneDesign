@@ -37,7 +37,7 @@ def evaluate(cfg: dict, data_root: str, ckpt_dir: str):
     mu, std = stats["mu"], stats["std"]
 
     test_ds = StudyDataset(data_root, cfg, split="test", normal_only=False)
-    loader = DataLoader(test_ds, batch_size=64, shuffle=False, num_workers=4)
+    loader = DataLoader(test_ds, batch_size=64, shuffle=False, num_workers=0)
 
     all_scores, all_labels = [], []
 
@@ -78,7 +78,7 @@ def _plot_tsne(cfg, data_root, backbone, device):
         return
 
     test_ds = StudyDataset(data_root, cfg, split="test", normal_only=False)
-    loader = DataLoader(test_ds, batch_size=64, shuffle=False)
+    loader = DataLoader(test_ds, batch_size=64, shuffle=False, num_workers=0)
 
     feats, labels = [], []
     backbone.eval()
